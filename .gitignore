@@ -1,0 +1,19 @@
+.DS_Store
+Thumbs.db
+
+# Arduino / build artifacts
+*.o
+*.a
+*.d
+*.elf
+*.bin
+*.map
+*.hex
+
+# IDEs
+.vscode/
+.idea/
+
+# OS / editor swap
+*~
+*.swp
