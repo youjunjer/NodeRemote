@@ -757,7 +757,8 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
 
   mbedtls_sha256_context sha;
   mbedtls_sha256_init(&sha);
-  mbedtls_sha256_starts_ret(&sha, 0);
+  // Use non-*_ret variants for compatibility with older Arduino-ESP32 toolchains.
+  mbedtls_sha256_starts(&sha, 0);
 
   WiFiClient* stream = http.getStreamPtr();
   uint8_t buf[2048];
@@ -780,7 +781,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
       continue;
     }
 
-    mbedtls_sha256_update_ret(&sha, buf, static_cast<size_t>(n));
+    mbedtls_sha256_update(&sha, buf, static_cast<size_t>(n));
     const size_t w = Update.write(buf, static_cast<size_t>(n));
     if (w != static_cast<size_t>(n)) {
       lastError_ = "ota_update_write_failed";
@@ -815,7 +816,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   http.end();
 
   uint8_t digest[32];
-  mbedtls_sha256_finish_ret(&sha, digest);
+  mbedtls_sha256_finish(&sha, digest);
   mbedtls_sha256_free(&sha);
   const String gotSha = sha256HexLower(digest);
   String exp = expectSha;

@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.4.2";
+  static constexpr const char* kVersion = "0.4.3";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
