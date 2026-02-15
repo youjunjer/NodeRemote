@@ -25,7 +25,7 @@ PubSubClient MQTTClient(WifiClient);
 void setup() {
   Serial.begin(115200);
 
-  WiFiConnecte();
+  WiFiConnect();
   MQTTConnect();
   if (!node.begin()) {
     Serial.print("Node Remote begin not ready yet: ");
@@ -35,7 +35,7 @@ void setup() {
 }
 
 void loop() {
-  WiFiConnecte();
+  WiFiConnect();
   MQTTConnect();
   if ((millis() - MQTTLastPublishTime) >= MQTTPublishInterval) {
 
@@ -51,7 +51,7 @@ void loop() {
   delay(100);         // pause 100ms
 }
 
-void WiFiConnecte() {
+void WiFiConnect() {
   if (WiFi.status() == WL_CONNECTED) return;
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int tryCount = 0;
