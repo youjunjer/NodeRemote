@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.4.1";
+  static constexpr const char* kVersion = "0.4.2";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -59,6 +59,9 @@ class NodeRemote {
 
   bool connectMqtt();
   bool subscribeDownTopics();
+  bool handleOtaPayload(const String& payload);
+  void publishOtaProgress(const String& jobUid, const String& state, int pct);
+  void publishOtaResult(const String& jobUid, bool ok, const String& error, const String& version, const String& firmwareUid);
 
  private:
   static constexpr const char* kPrefsNs = "espnode";
@@ -96,6 +99,9 @@ class NodeRemote {
   bool sleepPending_ = false;
   uint32_t sleepAtMs_ = 0;
   uint64_t sleepWakeUs_ = 0;
+
+  bool otaInProgress_ = false;
+  uint32_t lastOtaProgressMs_ = 0;
 
   bool mqttTlsEnabled_ = true;
   bool mqttTlsInsecure_ = true;

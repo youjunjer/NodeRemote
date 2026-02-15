@@ -3,7 +3,9 @@
 #include <ArduinoJson.h>
 #include <ESP.h>
 #include <HTTPClient.h>
+#include <Update.h>
 #include <WiFiClientSecure.h>
+#include <mbedtls/sha256.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 extern "C" uint32_t esp_random(void);
@@ -51,6 +53,17 @@ static String resetReasonString(esp_reset_reason_t r) {
     default:
       return "unknown";
   }
+}
+
+static String sha256HexLower(const uint8_t* digest32) {
+  static const char* kHex = "0123456789abcdef";
+  char out[65];
+  for (int i = 0; i < 32; i++) {
+    out[i * 2] = kHex[(digest32[i] >> 4) & 0x0F];
+    out[i * 2 + 1] = kHex[digest32[i] & 0x0F];
+  }
+  out[64] = '\0';
+  return String(out);
 }
 
 NodeRemote* NodeRemote::instance_ = nullptr;
@@ -471,6 +484,10 @@ void NodeRemote::handleMqttMessage(const String& topic, const String& payload) {
     return;
   }
   const String subTopic = topic.substring((downBaseTopic_ + "/").length());
+  if (subTopic == "ota") {
+    handleOtaPayload(payload);
+    return;
+  }
   commandHandler_(subTopic, payload);
 }
 
@@ -604,6 +621,241 @@ bool NodeRemote::publishUp(const String& subTopic, const String& payload, bool r
 
 bool NodeRemote::publishAck(const String& commandName, const String& payload, bool retained) {
   return publishUp("ack/" + commandName, payload, retained);
+}
+
+void NodeRemote::publishOtaProgress(const String& jobUid, const String& state, int pct) {
+  if (!mqtt_.connected()) {
+    return;
+  }
+  StaticJsonDocument<256> doc;
+  doc["job_uid"] = jobUid;
+  doc["state"] = state;
+  if (pct >= 0) {
+    doc["pct"] = pct;
+  }
+  String out;
+  serializeJson(doc, out);
+  publishUp("ota/progress", out, false);
+}
+
+void NodeRemote::publishOtaResult(const String& jobUid, bool ok, const String& error, const String& version, const String& firmwareUid) {
+  if (!mqtt_.connected()) {
+    return;
+  }
+  StaticJsonDocument<256> doc;
+  doc["job_uid"] = jobUid;
+  doc["ok"] = ok;
+  if (!error.isEmpty()) {
+    doc["error"] = error;
+  }
+  if (!version.isEmpty()) {
+    doc["version"] = version;
+  }
+  if (!firmwareUid.isEmpty()) {
+    doc["firmware_uid"] = firmwareUid;
+  }
+  String out;
+  serializeJson(doc, out);
+  publishUp("ota/result", out, false);
+}
+
+bool NodeRemote::handleOtaPayload(const String& payload) {
+  StaticJsonDocument<1024> doc;
+  if (deserializeJson(doc, payload) != DeserializationError::Ok) {
+    lastError_ = "ota_json_parse_failed";
+    logLine("ota json parse failed");
+    return false;
+  }
+
+  const String jobUid = String(doc["job_uid"] | doc["job"] | "");
+  const String firmwareUid = String(doc["firmware_uid"] | "");
+  const String version = String(doc["version"] | "");
+  const String url = String(doc["url"] | "");
+  const String expectSha = String(doc["sha256"] | doc["sha"] | "");
+  const int expectSize = int(doc["size"] | doc["size_bytes"] | 0);
+
+  if (jobUid.isEmpty() || url.isEmpty() || expectSha.length() < 64) {
+    lastError_ = "ota_missing_fields";
+    logLine("ota missing fields job/url/sha");
+    if (!jobUid.isEmpty()) {
+      publishOtaResult(jobUid, false, "missing_fields", version, firmwareUid);
+    }
+    return false;
+  }
+
+  if (otaInProgress_) {
+    logLine("ota busy");
+    publishOtaResult(jobUid, false, "busy", version, firmwareUid);
+    return false;
+  }
+
+  if (!mqtt_.connected()) {
+    lastError_ = "ota_mqtt_not_connected";
+    logLine("ota mqtt not connected");
+    return false;
+  }
+
+  otaInProgress_ = true;
+  lastOtaProgressMs_ = 0;
+  logLine("ota start job=" + jobUid + " ver=" + version);
+  publishOtaProgress(jobUid, "downloading", 0);
+
+  HTTPClient http;
+  WiFiClientSecure secure;
+
+  if (url.startsWith("https://")) {
+    // Mirror MQTT TLS config: insecure by default for easy first-time usage.
+    if (mqttTlsInsecure_) {
+      secure.setInsecure();
+    } else if (mqttCaCertPem_ != nullptr) {
+      secure.setCACert(mqttCaCertPem_);
+    } else {
+      secure.setInsecure();
+    }
+    if (!http.begin(secure, url)) {
+      lastError_ = "ota_http_begin_failed";
+      logLine("ota http begin failed");
+      publishOtaResult(jobUid, false, "http_begin_failed", version, firmwareUid);
+      otaInProgress_ = false;
+      return false;
+    }
+  } else {
+    if (!http.begin(url)) {
+      lastError_ = "ota_http_begin_failed";
+      logLine("ota http begin failed");
+      publishOtaResult(jobUid, false, "http_begin_failed", version, firmwareUid);
+      otaInProgress_ = false;
+      return false;
+    }
+  }
+
+  const int code = http.GET();
+  if (code != 200) {
+    lastError_ = "ota_http_" + String(code);
+    logLine("ota http failed code=" + String(code));
+    publishOtaResult(jobUid, false, "http_" + String(code), version, firmwareUid);
+    http.end();
+    otaInProgress_ = false;
+    return false;
+  }
+
+  const int contentLen = http.getSize();
+  const int totalLen = (expectSize > 0) ? expectSize : contentLen;
+  if (totalLen <= 0) {
+    logLine("ota unknown size");
+  }
+
+  publishOtaProgress(jobUid, "flashing", 0);
+  if (!Update.begin(totalLen > 0 ? static_cast<size_t>(totalLen) : UPDATE_SIZE_UNKNOWN)) {
+    lastError_ = "ota_update_begin_failed";
+    logLine("ota update begin failed");
+    publishOtaResult(jobUid, false, "update_begin_failed", version, firmwareUid);
+    http.end();
+    otaInProgress_ = false;
+    return false;
+  }
+
+  mbedtls_sha256_context sha;
+  mbedtls_sha256_init(&sha);
+  mbedtls_sha256_starts_ret(&sha, 0);
+
+  WiFiClient* stream = http.getStreamPtr();
+  uint8_t buf[2048];
+  size_t written = 0;
+  int lastPct = -1;
+
+  while (http.connected() && (totalLen <= 0 || static_cast<int>(written) < totalLen)) {
+    const size_t avail = stream->available();
+    if (avail == 0) {
+      mqtt_.loop();
+      delay(1);
+      continue;
+    }
+
+    const size_t toRead = min(avail, sizeof(buf));
+    const int n = stream->readBytes(buf, toRead);
+    if (n <= 0) {
+      mqtt_.loop();
+      delay(1);
+      continue;
+    }
+
+    mbedtls_sha256_update_ret(&sha, buf, static_cast<size_t>(n));
+    const size_t w = Update.write(buf, static_cast<size_t>(n));
+    if (w != static_cast<size_t>(n)) {
+      lastError_ = "ota_update_write_failed";
+      logLine("ota update write failed");
+      publishOtaResult(jobUid, false, "update_write_failed", version, firmwareUid);
+      Update.abort();
+      http.end();
+      otaInProgress_ = false;
+      return false;
+    }
+    written += w;
+
+    int pct = -1;
+    if (totalLen > 0) {
+      pct = int((written * 100UL) / static_cast<size_t>(totalLen));
+      pct = max(0, min(100, pct));
+    }
+
+    const uint32_t now = millis();
+    if (pct >= 0 && pct != lastPct && (pct % 5 == 0 || now - lastOtaProgressMs_ >= 1000)) {
+      lastPct = pct;
+      lastOtaProgressMs_ = now;
+      publishOtaProgress(jobUid, "flashing", pct);
+    } else if (now - lastOtaProgressMs_ >= 3000) {
+      // Keep-alive progress at least every 3s.
+      lastOtaProgressMs_ = now;
+      publishOtaProgress(jobUid, "flashing", pct);
+    }
+    mqtt_.loop();
+  }
+
+  http.end();
+
+  uint8_t digest[32];
+  mbedtls_sha256_finish_ret(&sha, digest);
+  mbedtls_sha256_free(&sha);
+  const String gotSha = sha256HexLower(digest);
+  String exp = expectSha;
+  exp.toLowerCase();
+
+  if (totalLen > 0 && static_cast<int>(written) != totalLen) {
+    lastError_ = "ota_size_mismatch";
+    logLine("ota size mismatch wrote=" + String(written) + " expected=" + String(totalLen));
+    publishOtaResult(jobUid, false, "size_mismatch", version, firmwareUid);
+    Update.abort();
+    otaInProgress_ = false;
+    return false;
+  }
+
+  if (gotSha != exp) {
+    lastError_ = "ota_sha256_mismatch";
+    logLine("ota sha mismatch");
+    publishOtaResult(jobUid, false, "sha256_mismatch", version, firmwareUid);
+    Update.abort();
+    otaInProgress_ = false;
+    return false;
+  }
+
+  if (!Update.end(true)) {
+    lastError_ = "ota_update_end_failed";
+    logLine("ota update end failed");
+    publishOtaResult(jobUid, false, "update_end_failed", version, firmwareUid);
+    otaInProgress_ = false;
+    return false;
+  }
+
+  publishOtaProgress(jobUid, "rebooting", 100);
+  publishOtaResult(jobUid, true, "", version, firmwareUid);
+  logLine("ota success rebooting");
+
+  // Delay a bit so MQTT has time to flush.
+  rebootPending_ = true;
+  rebootAtMs_ = millis() + 1500;
+  otaInProgress_ = false;
+  return true;
 }
 
 bool NodeRemote::println(const String& message) {
