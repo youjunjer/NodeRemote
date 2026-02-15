@@ -20,18 +20,6 @@ ESP32 library for NodeAnywhere device claim + remote control over MQTT:
 - OTA job (download + sha256 verify + reboot)
 - Serial debug logs (enabled by default)
 
-## MQTT Topic Layout
-- Uplink base: `devices/<deviceUid>/up/...`
-- Downlink base: `devices/<deviceUid>/down/...`
-- Heartbeat: `devices/<deviceUid>/up/heartbeat`
-- Status: `devices/<deviceUid>/up/status`
-- Generic uplink: `devices/<deviceUid>/up/<subTopic>`
-- ACK helper: `devices/<deviceUid>/up/ack/<commandName>`
-- Command subscribe filter: `devices/<deviceUid>/down/#`
-- Console logs: `devices/<deviceUid>/up/console`
-- OTA progress: `devices/<deviceUid>/up/ota/progress`
-- OTA result: `devices/<deviceUid>/up/ota/result`
-
 ## Usage
 See `examples/BasicNode/BasicNode.ino`.
 
