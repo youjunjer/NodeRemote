@@ -1,126 +1,99 @@
 #include <WiFi.h>
-#include <PubSubClient.h>
 #include <NodeRemote.h>
 
-// 1) Get a one-time Token and a Device UID from NodeAnywhere (My Devices -> Add device).
-// 2) Paste them below and flash this sketch.
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
-const char* CLAIM_TOKEN = "PASTE_CLAIM_TOKEN";
-const char* DEVICE_UID = "PASTE_DEVICE_UID";
-
+// Please obtain the device Token and device UID from the backend to complete the first-time registration.
+const char* CLAIM_TOKEN = "your token";
+const char* DEVICE_UID = "your UID";
 NodeRemote node(CLAIM_TOKEN, DEVICE_UID);
 
-// Optional: demo an additional user MQTT client (your own telemetry/app traffic).
-// NodeRemote is separate from this: it handles claim, command, status, console, OTA.
-// Set to 1 if you want the demo enabled.
-#define DEMO_USER_MQTT 0
+// ------ Modify the following to your settings ------
+char* WIFI_SSID = "wifi ssid";
+char* WIFI_PASS = "wifi password";
+char* MQTTServer = "mqttgo.io";        // MQTT server with no registration required
+int MQTTPort = 1883;                   // MQTT Port
+String MQTTClientId = "";              // MQTT ClientID
+char* MQTTUser = "";                   // MQTT account
+char* MQTTPassword = "";               // MQTT Password
+char* MQTTPubTopic = "YourTopic/pub";  // Publish topic: publishing
+char* MQTTSubTopic = "YourTopic/sub";  // Subscribe topic: subscribing
 
-#if DEMO_USER_MQTT
-// ------ Modify the following to your own broker settings ------
-const char* USER_MQTT_HOST = "your-broker-host";
-const int USER_MQTT_PORT = 1883;
-String USER_MQTT_CLIENT_ID = "";
-const char* USER_MQTT_USER = "";
-const char* USER_MQTT_PASSWORD = "";
-const char* USER_MQTT_PUB_TOPIC = "YourTopic/pub";
-const char* USER_MQTT_SUB_TOPIC = "YourTopic/sub";
-
-unsigned long userMqttLastPublishMs = 0;
-const unsigned long userMqttPublishIntervalMs = 10000;
-WiFiClient userWiFiClient;
-PubSubClient userMqtt(userWiFiClient);
-
-void userMqttCallback(char* topic, byte* payload, unsigned int length);
-void ensureUserMqttConnected();
-#endif
-
-void ensureWiFiConnected();
+long MQTTLastPublishTime;          // This variable is used to record the publish time
+long MQTTPublishInterval = 10000;  // Publish once every 10 seconds
+WiFiClient WifiClient;
+PubSubClient MQTTClient(WifiClient);
 
 void setup() {
   Serial.begin(115200);
 
-  ensureWiFiConnected();
-
+  WiFiConnecte();
+  MQTTConnect();
   if (!node.begin()) {
-    Serial.print("NodeRemote begin not ready yet: ");
+    Serial.print("Node Remote begin not ready yet: ");
     Serial.print(node.lastError());
-    Serial.println(", will keep retrying in loop()...");
+    Serial.println(", Will keep retrying in loop()...");
   }
 }
 
 void loop() {
-  ensureWiFiConnected();
-  node.loop();  // NodeRemote client loop
+  WiFiConnecte();
+  MQTTConnect();
+  if ((millis() - MQTTLastPublishTime) >= MQTTPublishInterval) {
 
-#if DEMO_USER_MQTT
-  ensureUserMqttConnected();
-  if (millis() - userMqttLastPublishMs >= userMqttPublishIntervalMs) {
-    const String payload = "hello";
-    userMqtt.publish(USER_MQTT_PUB_TOPIC, payload.c_str());
-    Serial.println("User MQTT published: hello");
-    node.println("User MQTT published: hello");
-    userMqttLastPublishMs = millis();
+    String payload = "hello";
+    MQTTClient.publish(MQTTPubTopic, payload.c_str());
+    Serial.println("MQTT data has been uploaded...");
+    node.println("MQTT data has been uploaded...");  // publish to NodeAnywhere conversation
+    MQTTLastPublishTime = millis();     // Update LastPublishTime
   }
-  userMqtt.loop();
-#endif
 
-  delay(10);
+  MQTTClient.loop();  // your mqtt client loop
+  node.loop();        // NodeRemote client loop
+  delay(100);         // pause 100ms
 }
 
-void ensureWiFiConnected() {
-  if (WiFi.status() == WL_CONNECTED) {
-    return;
-  }
-  WiFi.mode(WIFI_STA);
+void WiFiConnecte() {
+  if (WiFi.status() == WL_CONNECTED) return;
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-  int tryCount = 0;  // ~60 seconds
+  int tryCount = 0;
   while (WiFi.status() != WL_CONNECTED) {
-    if (tryCount++ >= 60) {
-      Serial.println("WiFi connect timeout, restarting...");
-      ESP.restart();
-    }
-    Serial.print(".");
+    if (tryCount++ >= 60) ESP.restart();
+    Serial.println(".");
     delay(1000);
   }
-  Serial.println();
-  Serial.print("WiFi connected, IP=");
-  Serial.println(WiFi.localIP());
 }
 
-#if DEMO_USER_MQTT
-void ensureUserMqttConnected() {
-  if (userMqtt.connected()) return;
-  userMqtt.setServer(USER_MQTT_HOST, USER_MQTT_PORT);
-  userMqtt.setCallback(userMqttCallback);
-
-  while (!userMqtt.connected()) {
-    if (USER_MQTT_CLIENT_ID.length() == 0) {
-      USER_MQTT_CLIENT_ID = "esp32-" + String(random(1000000, 9999999));
-    }
-    if (userMqtt.connect(USER_MQTT_CLIENT_ID.c_str(), USER_MQTT_USER, USER_MQTT_PASSWORD)) {
-      Serial.println("User MQTT connected");
-      userMqtt.subscribe(USER_MQTT_SUB_TOPIC);
+// Start MQTT connection
+void MQTTConnect() {
+  if (MQTTClient.connected()) return;
+  MQTTClient.setServer(MQTTServer, MQTTPort);
+  MQTTClient.setCallback(MQTTCallback);
+  while (!MQTTClient.connected()) {
+    // randomize a client id
+    if (MQTTClientId == "") MQTTClientId = "esp32-" + String(random(1000000, 9999999));
+    if (MQTTClient.connect(MQTTClientId.c_str(), MQTTUser, MQTTPassword)) {
+      // Connected successfully; display "Connected".
+      Serial.println("MQTT connected");
+      MQTTClient.subscribe(MQTTSubTopic);
     } else {
-      userMqtt.disconnect();
-      Serial.print("User MQTT connect failed, state=");
-      Serial.println(userMqtt.state());
+      // If connection fails, display error message and reconnect
+      MQTTClient.disconnect();
+      Serial.print("MQTT connection failed, status code=");
+      Serial.println(MQTTClient.state());
+      Serial.println("Reconnecting in five seconds");
       delay(5000);
     }
   }
 }
 
-void userMqttCallback(char* topic, byte* payload, unsigned int length) {
-  String payloadString;
-  payloadString.reserve(length);
-  for (unsigned int i = 0; i < length; i++) {
-    payloadString += static_cast<char>(payload[i]);
-  }
-  Serial.print("User MQTT received topic=");
+// When a subscribed message is received
+void MQTTCallback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
-  Serial.print(" payload=");
+  Serial.print(" subscription notification: ");
+  String payloadString;  // Convert received payload to a string
+  // Display subscription content
+  for (int i = 0; i < length; i++) {
+    payloadString = payloadString + (char)payload[i];
+  }
   Serial.println(payloadString);
-  node.println(String("User MQTT received: ") + topic + " " + payloadString);
+  node.println(String(topic) + " receive: " + payloadString);
 }
-#endif
