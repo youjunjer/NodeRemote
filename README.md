@@ -1,7 +1,7 @@
 # NodeRemote
 
-ESP32 library for remote monitor/control with your current backend flow:
-`HTTP claim -> get MQTT credential -> MQTT up/down`.
+ESP32 library for NodeAnywhere device claim + remote control over MQTT:
+`HTTP claim -> receive per-device MQTT credentials -> MQTT up/down`.
 
 ## Features
 - Wi-Fi handled by your sketch (`.ino`)
@@ -9,11 +9,15 @@ ESP32 library for remote monitor/control with your current backend flow:
 - Store MQTT credential in NVS (`Preferences`)
 - MQTT reconnect and auto subscribe
 - Topic layout aligned with your web platform
-- Periodic heartbeat JSON
+- Periodic heartbeat JSON (default: 60s)
 - Periodic status snapshot JSON (default: 1 hour)
-- Command callback from downlink topic
+- Remote commands (default handler):
+  - `ping`
+  - `info`
+  - `sleep <sec>` (60~86400)
+  - `reset`
 - `node.println(...)` -> uplink console logs
-- OTA via downlink job (download + sha256 verify + reboot)
+- OTA job (download + sha256 verify + reboot)
 - Serial debug logs (enabled by default)
 
 ## MQTT Topic Layout
@@ -31,28 +35,36 @@ ESP32 library for remote monitor/control with your current backend flow:
 ## Usage
 See `examples/BasicNode/BasicNode.ino`.
 
-Minimal setup:
+Minimal setup (NodeRemote only):
 ```cpp
-// Handle Wi-Fi in your setup()/loop() first
-// Default server config is built in:
-// - MQTT host: node.mqttgo.io
-// - MQTT port: 8883 (TLS)
-// - API base URL: https://node.mqttgo.io
-NodeRemote node(CLAIM_TOKEN, DEVICE_UID);
-// Heartbeat default is 60s. Optional override:
-// node.setHeartbeatIntervalMs(60000);
-// Optional: disable logs
-// node.setDebugEnabled(false);
-node.begin();
+#include <WiFi.h>
+#include <NodeRemote.h>
 
-// Publish plain log lines to cloud console:
-// node.println("boot ok");
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char* CLAIM_TOKEN = "PASTE_CLAIM_TOKEN";
+const char* DEVICE_UID = "PASTE_DEVICE_UID";
+
+NodeRemote node(CLAIM_TOKEN, DEVICE_UID);
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  node.begin();
+}
+
+void loop() {
+  node.loop();
+}
 ```
 
 Command handler:
 - Optional. If you don't set one, a default handler is enabled.
 - Default commands (topic: `devices/<UID>/down/cmd`):
   - `ping` -> ACK ok + pong
+  - `info` -> ACK with summary
+  - `sleep 300` -> ACK then deep sleep
   - `reset` -> ACK ("收到") then reset soon
 
 ## OTA
@@ -73,7 +85,5 @@ mosquitto_sub -h node.mqttgo.io -p 8883 --cafile /etc/ssl/certs/ca-certificates.
   -u <username> -P <password> -t 'devices/<UID>/up/#' -v
 ```
 
-Send command:
-```bash
-mosquitto_pub -h <broker-ip> -t 'devices/<UID>/down/cmd' -m led_on
-```
+Send commands/OTA:
+- Use the NodeAnywhere web UI (device page -> Remote Control / OTA).
