@@ -78,12 +78,5 @@ Command handler:
     - `devices/<UID>/up/ota/progress`
     - `devices/<UID>/up/ota/result`
 
-## Quick test with mosquitto
-Subscribe:
-```bash
-mosquitto_sub -h node.mqttgo.io -p 8883 --cafile /etc/ssl/certs/ca-certificates.crt \
-  -u <username> -P <password> -t 'devices/<UID>/up/#' -v
-```
-
 Send commands/OTA:
 - Use the NodeAnywhere web UI (device page -> Remote Control / OTA).
