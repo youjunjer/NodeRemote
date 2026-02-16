@@ -347,9 +347,15 @@ bool NodeRemote::claimDevice() {
   // Support HTTPS API endpoints (443). By default we use insecure TLS to keep the
   // out-of-box experience simple. For production, pin a CA cert and avoid insecure TLS.
   if (url.startsWith("https://")) {
-    WiFiClientSecure secure;
-    secure.setInsecure();
-    if (!http.begin(secure, url)) {
+    // Reuse the class-level TLS client to avoid large stack usage in this function.
+    if (mqttTlsInsecure_) {
+      netTls_.setInsecure();
+    } else if (mqttCaCertPem_ != nullptr) {
+      netTls_.setCACert(mqttCaCertPem_);
+    } else {
+      netTls_.setInsecure();
+    }
+    if (!http.begin(netTls_, url)) {
       lastError_ = "http_begin_failed";
       noteClaimFailure(false);
       logLine("claim http begin failed url=" + url);
