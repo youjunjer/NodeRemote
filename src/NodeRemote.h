@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.4.4";
+  static constexpr const char* kVersion = "0.4.5";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -99,6 +99,8 @@ class NodeRemote {
   bool sleepPending_ = false;
   uint32_t sleepAtMs_ = 0;
   uint64_t sleepWakeUs_ = 0;
+  bool wipeIdentityPending_ = false;
+  uint32_t wipeIdentityAtMs_ = 0;
 
   bool otaInProgress_ = false;
   uint32_t lastOtaProgressMs_ = 0;

@@ -195,6 +195,15 @@ void NodeRemote::loop() {
     ESP.restart();
   }
 
+  if (wipeIdentityPending_ && wipeIdentityAtMs_ != 0 && millis() >= wipeIdentityAtMs_) {
+    wipeIdentityPending_ = false;
+    wipeIdentityAtMs_ = 0;
+    logLine("wipe identity now");
+    clearCredentials();
+    delay(80);
+    ESP.restart();
+  }
+
   if (rebootPending_ && rebootAtMs_ != 0 && millis() >= rebootAtMs_) {
     rebootPending_ = false;
     rebootAtMs_ = 0;
@@ -238,7 +247,7 @@ bool NodeRemote::ensureConnected() {
     if (claimPermanentlyFailed_) {
       // Token is invalid/expired/already used: stop spamming server.
       lastError_ = "claim_permanently_failed";
-      logThrottled("claim permanently failed; waiting for new token", lastClaimLogMs_, 30000);
+      logThrottled("Claim permanently failed; Please upload a new sketch with a new token and UID.", lastClaimLogMs_, 30000);
       return false;
     }
     if (!shouldAttemptClaimNow()) {
@@ -601,6 +610,13 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
       sleepPending_ = true;
       sleepAtMs_ = millis() + 400;  // allow ack to flush
     }
+  } else if (cmd == "wipe_identity") {
+    // ACK first, then clear local identity and reboot.
+    ack["ok"] = true;
+    ack["result"] = "收到";
+    ack["wipe_identity_soon"] = true;
+    wipeIdentityPending_ = true;
+    wipeIdentityAtMs_ = millis() + 500;  // allow ack to flush
   } else {
     ack["ok"] = false;
     ack["error"] = "unknown_command";
