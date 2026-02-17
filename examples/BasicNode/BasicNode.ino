@@ -23,7 +23,10 @@ void setup() {
   }
 
   // 開始 claim（首次）/登入（後續）與 MQTT 控制通道
-  node.begin();
+  if (!node.begin()) {
+    Serial.print("NodeRemote not ready yet: ");
+    Serial.println(node.lastError());
+  }
 }
 
 void loop() {

@@ -164,6 +164,7 @@ bool NodeRemote::begin() {
   // can exceed that and cause publish() to fail, leading to web-side ACK timeouts.
   // 1KB keeps overhead small but is enough for our command acks + summary.
   mqtt_.setBufferSize(1024);
+  checkBootRevokeWindow();
   loadCredentials();
   updateTopicBases();
   // Unconditional marker so users can verify they compiled the correct library.
@@ -300,11 +301,25 @@ bool NodeRemote::connectMqtt() {
       // Not authorized: clear persisted credentials and force re-claim on next loop.
       clearCredentials();
       lastError_ = "mqtt_not_authorized_reclaiming";
-      logLine("mqtt not authorized; clearing credentials and re-claiming");
+      logLine("mqtt auth failed (bad/removed device credentials); clearing local credentials and re-claiming");
       return false;
     }
     lastError_ = "mqtt_connect_failed_" + String(st);
-    logLine("mqtt connect failed state=" + String(st));
+    if (st == -4) {
+      logLine("mqtt connect failed: connection timeout (broker reachable but no response)");
+    } else if (st == -2) {
+      logLine("mqtt connect failed: network/TLS connect failed (host/port/certificate/firewall)");
+    } else if (st == -1) {
+      logLine("mqtt connect failed: disconnected (retrying)");
+    } else if (st == 2) {
+      logLine("mqtt connect failed: protocol rejected");
+    } else if (st == 3) {
+      logLine("mqtt connect failed: broker unavailable");
+    } else if (st == 4) {
+      logLine("mqtt connect failed: bad username/password");
+    } else {
+      logLine("mqtt connect failed state=" + String(st));
+    }
     return false;
   }
   logLine("mqtt connected");
@@ -392,11 +407,23 @@ bool NodeRemote::claimDevice() {
   if (status != 200) {
     // Try to parse server error to decide whether retry makes sense.
     String serverErr;
+    String serverDetail;
     if (resp.startsWith("{")) {
       StaticJsonDocument<256> e;
       if (deserializeJson(e, resp) == DeserializationError::Ok) {
         serverErr = String(e["error"] | "");
+        serverDetail = String(e["detail"] | "");
       }
+    }
+    if (serverErr == "mqtt_provision_failed") {
+      lastError_ = "claim_mqtt_provision_failed";
+      noteClaimFailure(false);
+      if (serverDetail.length() > 0) {
+        logLine("claim failed: server cannot issue mqtt credentials (" + serverDetail + ")");
+      } else {
+        logLine("claim failed: server cannot issue mqtt credentials");
+      }
+      return false;
     }
     if (serverErr == "invalid_claim_token" ||
         serverErr == "claim_token_expired" ||
@@ -434,9 +461,15 @@ bool NodeRemote::claimDevice() {
   const String user = doc["mqtt_credentials"]["username"] | "";
   const String pass = doc["mqtt_credentials"]["password"] | "";
   if (user.isEmpty() || pass.isEmpty()) {
-    lastError_ = "claim_no_mqtt_credentials";
-    noteClaimFailure(false);
-    logLine("claim missing mqtt credentials");
+    const String provErr = doc["mqtt_provision_error"] | "";
+    if (!provErr.isEmpty()) {
+      lastError_ = "claim_no_mqtt_credentials_" + provErr;
+      logLine("claim failed: missing mqtt credentials from server, provision error=" + provErr);
+    } else {
+      lastError_ = "claim_no_mqtt_credentials";
+      logLine("claim failed: missing mqtt credentials from server");
+    }
+    noteClaimFailure(true);
     return false;
   }
 
@@ -959,6 +992,28 @@ void NodeRemote::clearCredentials() {
   mqttUser_ = "";
   mqttPass_ = "";
   logLine("credentials cleared");
+}
+
+bool NodeRemote::checkBootRevokeWindow() {
+  static constexpr int kBootButtonPin = 0;           // BOOT button on most ESP32 dev boards (IO0)
+  static constexpr uint32_t kBootWaitWindowMs = 5000;
+
+  pinMode(kBootButtonPin, INPUT_PULLUP);
+  logLine("startup window 5s: press BOOT(IO0) to clear NVS credentials");
+
+  const uint32_t started = millis();
+  while (millis() - started < kBootWaitWindowMs) {
+    // BOOT pressed => IO0 pulled LOW.
+    if (digitalRead(kBootButtonPin) == LOW) {
+      logLine("BOOT(IO0) detected; clearing NVS credentials...");
+      clearCredentials();
+      logLine("NVS credentials cleared by BOOT button");
+      delay(120);  // debounce / user feedback
+      return true;
+    }
+    delay(20);
+  }
+  return false;
 }
 
 void NodeRemote::updateTopicBases() {

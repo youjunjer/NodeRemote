@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.4.5";
+  static constexpr const char* kVersion = "0.4.8";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -120,6 +120,7 @@ class NodeRemote {
   void updateTopicBases();
   bool loadCredentials();
   bool saveCredentials(const String& mqttUser, const String& mqttPass, const String& deviceUid);
+  bool checkBootRevokeWindow();
   String defaultClientId() const;
   void logLine(const String& msg);
   void logThrottled(const String& msg, uint32_t& lastMs, uint32_t everyMs);

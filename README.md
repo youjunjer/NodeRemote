@@ -55,6 +55,15 @@ Command handler:
   - `sleep 300` -> ACK then deep sleep
   - `reset` -> ACK ("收到") then reset soon
 
+## Reclaim / Local Recovery
+- At boot, NodeRemote waits 5 seconds and prints a serial hint:
+  - `startup window 5s: press BOOT(IO0) to clear NVS credentials`
+- If you press `BOOT (IO0)` during this window, NodeRemote clears stored NVS credentials:
+  - `mqtt_user`
+  - `mqtt_pass`
+  - `device_uid`
+- Use this when a device was removed/revoked and you need to re-register with a new Token + UID.
+
 ## OTA
 - Downlink topic: `devices/<UID>/down/ota`
 - Payload: JSON with `job_uid`, `url`, `sha256`, `size` (and optional `version`, `firmware_uid`)
