@@ -900,13 +900,11 @@ bool NodeRemote::println(const char* message) {
 }
 
 bool NodeRemote::sendHeartbeat() {
-  StaticJsonDocument<256> doc;
-  doc["ts_ms"] = static_cast<uint32_t>(millis());
+  StaticJsonDocument<192> doc;
   doc["uptime_sec"] = static_cast<uint32_t>(millis() / 1000);
   doc["rssi"] = WiFi.RSSI();
-  doc["heap"] = ESP.getFreeHeap();
   doc["ip"] = WiFi.localIP().toString();
-  doc["fw"] = String("NodeRemote/") + kVersion;
+  doc["fw"] = kVersion;
 
   String payload;
   serializeJson(doc, payload);
