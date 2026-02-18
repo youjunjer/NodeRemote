@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.4.8";
+  static constexpr const char* kVersion = "0.4.9";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -104,6 +104,8 @@ class NodeRemote {
 
   bool otaInProgress_ = false;
   uint32_t lastOtaProgressMs_ = 0;
+  bool otaPending_ = false;
+  String otaPendingPayload_;
 
   bool mqttTlsEnabled_ = true;
   bool mqttTlsInsecure_ = true;

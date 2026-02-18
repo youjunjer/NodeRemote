@@ -181,6 +181,14 @@ void NodeRemote::loop() {
   ensureConnected();
   mqtt_.loop();
 
+  // Run OTA outside MQTT callback context to reduce stack pressure.
+  if (otaPending_ && !otaInProgress_) {
+    const String payload = otaPendingPayload_;
+    otaPendingPayload_ = "";
+    otaPending_ = false;
+    handleOtaPayload(payload);
+  }
+
   if (sleepPending_ && sleepAtMs_ != 0 && millis() >= sleepAtMs_) {
     sleepPending_ = false;
     sleepAtMs_ = 0;
@@ -533,7 +541,22 @@ void NodeRemote::handleMqttMessage(const String& topic, const String& payload) {
   }
   const String subTopic = topic.substring((downBaseTopic_ + "/").length());
   if (subTopic == "ota") {
-    handleOtaPayload(payload);
+    if (otaInProgress_) {
+      // Parse job id best-effort for a meaningful busy response.
+      String jobUid = "";
+      StaticJsonDocument<256> d;
+      if (deserializeJson(d, payload) == DeserializationError::Ok) {
+        jobUid = String(d["job_uid"] | d["job"] | "");
+      }
+      logLine("ota busy");
+      if (!jobUid.isEmpty()) {
+        publishOtaResult(jobUid, false, "busy", "", "");
+      }
+      return;
+    }
+    otaPendingPayload_ = payload;
+    otaPending_ = true;
+    logLine("ota request queued");
     return;
   }
   commandHandler_(subTopic, payload);
@@ -715,7 +738,7 @@ void NodeRemote::publishOtaResult(const String& jobUid, bool ok, const String& e
 }
 
 bool NodeRemote::handleOtaPayload(const String& payload) {
-  StaticJsonDocument<1024> doc;
+  DynamicJsonDocument doc(1024);
   if (deserializeJson(doc, payload) != DeserializationError::Ok) {
     lastError_ = "ota_json_parse_failed";
     logLine("ota json parse failed");
@@ -816,7 +839,17 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   mbedtls_sha256_starts(&sha, 0);
 
   WiFiClient* stream = http.getStreamPtr();
-  uint8_t buf[2048];
+  const size_t bufSize = 1024;
+  uint8_t* buf = static_cast<uint8_t*>(malloc(bufSize));
+  if (!buf) {
+    lastError_ = "ota_no_memory";
+    logLine("ota no memory for download buffer");
+    publishOtaResult(jobUid, false, "no_memory", version, firmwareUid);
+    Update.abort();
+    http.end();
+    otaInProgress_ = false;
+    return false;
+  }
   size_t written = 0;
   int lastPct = -1;
 
@@ -828,7 +861,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
       continue;
     }
 
-    const size_t toRead = min(avail, sizeof(buf));
+    const size_t toRead = min(avail, bufSize);
     const int n = stream->readBytes(buf, toRead);
     if (n <= 0) {
       mqtt_.loop();
@@ -843,6 +876,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
       logLine("ota update write failed");
       publishOtaResult(jobUid, false, "update_write_failed", version, firmwareUid);
       Update.abort();
+      free(buf);
       http.end();
       otaInProgress_ = false;
       return false;
@@ -868,6 +902,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     mqtt_.loop();
   }
 
+  free(buf);
   http.end();
 
   uint8_t digest[32];
@@ -1034,12 +1069,14 @@ bool NodeRemote::loadCredentials() {
   prefs_.end();
 
   if (!savedUid.isEmpty()) {
-    if (deviceUid_.isEmpty()) {
+    // NVS identity is the source of truth after first successful claim.
+    // This allows OTA images built with different placeholder UID/TOKEN
+    // to keep working on already-registered devices.
+    if (deviceUid_.isEmpty() || deviceUid_ != savedUid) {
+      if (!deviceUid_.isEmpty() && deviceUid_ != savedUid) {
+        logLine("sketch UID differs from NVS UID; using NVS UID");
+      }
       deviceUid_ = savedUid;
-    } else if (deviceUid_ != savedUid) {
-      // Sketch UID differs from NVS UID: ignore stale credential set.
-      mqttUser_ = "";
-      mqttPass_ = "";
     }
   }
   updateTopicBases();

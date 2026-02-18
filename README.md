@@ -3,6 +3,10 @@
 ESP32 library for NodeAnywhere device claim + remote control over MQTT:
 `HTTP claim -> receive per-device MQTT credentials -> MQTT up/down`.
 
+## Version Note
+- Current release does **not** include built-in WiFi list management (scan/add/remove/reorder from cloud).
+- WiFi connection is still managed by user sketch (`WiFi.begin(...)`) in this version.
+
 ## Features
 - Wi-Fi handled by your sketch (`.ino`)
 - Device claim via HTTP `POST /api/devices/claim`
