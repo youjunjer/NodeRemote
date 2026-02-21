@@ -4,8 +4,8 @@ ESP32 library for NodeAnywhere device claim + remote control over MQTT:
 `HTTP claim -> receive per-device MQTT credentials -> MQTT up/down`.
 
 ## Version Note
-- Current release does **not** include built-in WiFi list management (scan/add/remove/reorder from cloud).
-- WiFi connection is still managed by user sketch (`WiFi.begin(...)`) in this version.
+- v0.5.10 includes first-stage built-in WiFi management in NodeRemote.
+- Device can maintain up to 5 AP profiles in NVS and auto-retry by priority.
 
 ## Features
 - Wi-Fi handled by your sketch (`.ino`)
@@ -23,6 +23,10 @@ ESP32 library for NodeAnywhere device claim + remote control over MQTT:
 - `node.println(...)` -> uplink console logs
 - OTA job (download + sha256 verify + reboot)
 - Serial debug logs (enabled by default)
+- Built-in WiFi management (optional):
+  - up to 5 AP profiles
+  - two rounds retry (15s per AP) then reboot
+  - BOOT(IO0) clears WiFi + MQTT credentials
 
 ## Usage
 See `examples/BasicNode/BasicNode.ino`.
@@ -81,3 +85,9 @@ Command handler:
 
 Send commands/OTA:
 - Use the NodeAnywhere web UI (device page -> Remote Control / OTA).
+
+WiFi management command payloads (MQTT `down/cmd` JSON):
+- `{"cmd":"wifi_scan_start"}`
+  - publishes scan result to `devices/<UID>/up/wifi/scan_result`
+- `{"cmd":"wifi_apply_config","aps":[{"ssid":"A","password":"P","priority":1}, ...]}`
+  - accepts 1~5 AP entries, saves to NVS, and reboots

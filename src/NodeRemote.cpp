@@ -157,14 +157,111 @@ void NodeRemote::setDebugOutput(Print& out) {
   logOut_ = &out;
 }
 
+void NodeRemote::setWifiManaged(bool enabled) {
+  wifiManagedEnabled_ = enabled;
+}
+
+bool NodeRemote::wifiAdd(const String& ssid, const String& password, int priority) {
+  String s = ssid;
+  s.trim();
+  if (s.isEmpty()) return false;
+  if (s.length() > 32) return false;
+  if (password.length() > 64) return false;
+
+  // If stored WiFi list exists in NVS, do not let sketch bootstrap override it.
+  // This keeps remote-applied wifi order/settings persistent across reboots.
+  if (wifiApCount_ == 0) {
+    wifiPrefs_.begin(kWifiPrefsNs, true);
+    const uint32_t storedCount = wifiPrefs_.getUInt("count", 0);
+    wifiPrefs_.end();
+    if (storedCount > 0) {
+      loadWifiConfig();
+      logLine("wifi bootstrap skipped: using NVS config");
+      return true;
+    }
+  }
+
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    if (wifiAps_[i].ssid == s) {
+      wifiAps_[i].password = password;
+      wifiAps_[i].priority = priority;
+      sortWifiByPriority();
+      return saveWifiConfig();
+    }
+  }
+  if (wifiApCount_ >= kWifiMaxAps) {
+    return false;
+  }
+  wifiAps_[wifiApCount_].ssid = s;
+  wifiAps_[wifiApCount_].password = password;
+  wifiAps_[wifiApCount_].priority = priority;
+  wifiApCount_++;
+  sortWifiByPriority();
+  return saveWifiConfig();
+}
+
+bool NodeRemote::wifiRemove(const String& ssid) {
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    if (wifiAps_[i].ssid == ssid) {
+      for (uint8_t j = i; j + 1 < wifiApCount_; j++) {
+        wifiAps_[j] = wifiAps_[j + 1];
+      }
+      wifiApCount_--;
+      return saveWifiConfig();
+    }
+  }
+  return false;
+}
+
+bool NodeRemote::wifiClear() {
+  clearWifiConfig();
+  return true;
+}
+
+bool NodeRemote::wifiSetPriority(const String& ssid, int priority) {
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    if (wifiAps_[i].ssid == ssid) {
+      wifiAps_[i].priority = priority;
+      sortWifiByPriority();
+      return saveWifiConfig();
+    }
+  }
+  return false;
+}
+
+uint8_t NodeRemote::wifiCount() const {
+  return wifiApCount_;
+}
+
+String NodeRemote::wifiListJson() const {
+  StaticJsonDocument<768> doc;
+  doc["managed"] = wifiManagedEnabled_;
+  JsonArray arr = doc.createNestedArray("aps");
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    JsonObject it = arr.createNestedObject();
+    it["ssid"] = wifiAps_[i].ssid;
+    it["priority"] = wifiAps_[i].priority;
+  }
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+bool NodeRemote::wifiConnectNow() {
+  return connectWifiFromManagedList();
+}
+
 bool NodeRemote::begin() {
   instance_ = this;
+  logLine(String("NodeRemote version ") + kVersion);
+  wifiBootStartedMs_ = millis();
   mqtt_.setCallback(staticCallback);
   // PubSubClient's default packet buffer is small (often 256 bytes). Our JSON acks (e.g. "info")
   // can exceed that and cause publish() to fail, leading to web-side ACK timeouts.
   // 1KB keeps overhead small but is enough for our command acks + summary.
   mqtt_.setBufferSize(1024);
   checkBootRevokeWindow();
+  loadWifiConfig();
   loadCredentials();
   updateTopicBases();
   // Unconditional marker so users can verify they compiled the correct library.
@@ -247,9 +344,34 @@ void NodeRemote::loop() {
 
 bool NodeRemote::ensureConnected() {
   if (WiFi.status() != WL_CONNECTED) {
-    lastError_ = "wifi_not_connected";
-    logThrottled("wifi not connected", lastWifiLogMs_, 10000);
-    return false;
+    if (wifiManagedEnabled_) {
+      const uint32_t now = millis();
+      if (lastWifiManageAttemptMs_ == 0 || (now - lastWifiManageAttemptMs_) >= wifiRetryBackoffMs_) {
+        lastWifiManageAttemptMs_ = now;
+        if (!connectWifiFromManagedList()) {
+          if (wifiAutoRebootOnFail_) {
+            const uint32_t up = now - wifiBootStartedMs_;
+            if (up >= wifiMinBootBeforeRebootMs_) {
+              logLine("wifi all rounds failed; rebooting");
+              rebootPending_ = true;
+              rebootAtMs_ = millis() + 300;
+            } else {
+              logLine("wifi all rounds failed; waiting until min boot window before reboot");
+            }
+          }
+          lastError_ = "wifi_not_connected";
+          return false;
+        }
+      } else {
+        lastError_ = "wifi_reconnect_backoff";
+        logThrottled("wifi reconnect backoff", lastWifiLogMs_, 10000);
+        return false;
+      }
+    } else {
+      lastError_ = "wifi_not_connected";
+      logThrottled("wifi not connected", lastWifiLogMs_, 10000);
+      return false;
+    }
   }
 
   if (!hasCredentials()) {
@@ -562,6 +684,167 @@ void NodeRemote::handleMqttMessage(const String& topic, const String& payload) {
   commandHandler_(subTopic, payload);
 }
 
+bool NodeRemote::handleWifiScanCommand(String& outAckJson) {
+  StaticJsonDocument<256> ack;
+  ack["cmd"] = "wifi_scan_start";
+
+  if (WiFi.status() != WL_CONNECTED) {
+    ack["ok"] = false;
+    ack["error"] = "wifi_not_connected";
+    serializeJson(ack, outAckJson);
+    return false;
+  }
+
+  logLine("wifi scan start");
+  const int found = WiFi.scanNetworks(false, true);
+  DynamicJsonDocument report(2048);
+  report["ts_ms"] = millis();
+  report["type"] = "wifi_scan_result";
+  JsonArray arr = report.createNestedArray("aps");
+  const int limit = found > 15 ? 15 : found;
+  for (int i = 0; i < limit; i++) {
+    const String ssid = WiFi.SSID(i);
+    if (ssid.isEmpty()) continue;
+    JsonObject it = arr.createNestedObject();
+    it["ssid"] = ssid;
+    it["rssi"] = WiFi.RSSI(i);
+    it["enc"] = static_cast<int>(WiFi.encryptionType(i));
+  }
+  String payload;
+  serializeJson(report, payload);
+  const bool published = publishUp("wifi/scan_result", payload, false);
+  WiFi.scanDelete();
+
+  ack["ok"] = published;
+  ack["result"] = published ? "scan_published" : "scan_publish_failed";
+  ack["count"] = arr.size();
+  serializeJson(ack, outAckJson);
+  logLine("wifi scan done count=" + String(arr.size()));
+  return published;
+}
+
+bool NodeRemote::handleWifiApplyConfigCommand(const String& payload, String& outAckJson) {
+  DynamicJsonDocument doc(2048);
+  StaticJsonDocument<256> ack;
+  ack["cmd"] = "wifi_apply_config";
+  if (deserializeJson(doc, payload) != DeserializationError::Ok) {
+    ack["ok"] = false;
+    ack["error"] = "invalid_json";
+    serializeJson(ack, outAckJson);
+    return false;
+  }
+  JsonArray aps = doc["aps"].as<JsonArray>();
+  if (aps.isNull() || aps.size() == 0 || aps.size() > kWifiMaxAps) {
+    ack["ok"] = false;
+    ack["error"] = "aps_required_1_to_5";
+    serializeJson(ack, outAckJson);
+    return false;
+  }
+
+  WifiApConfig oldAps[kWifiMaxAps];
+  const uint8_t oldCount = wifiApCount_;
+  for (uint8_t i = 0; i < oldCount && i < kWifiMaxAps; i++) {
+    oldAps[i] = wifiAps_[i];
+  }
+
+  wifiApCount_ = 0;
+  for (JsonVariant v : aps) {
+    if (wifiApCount_ >= kWifiMaxAps) break;
+    JsonObject o = v.as<JsonObject>();
+    String ssid = String(o["ssid"] | "");
+    String pass = String(o["password"] | o["pass"] | "");
+    const bool keepPassword = bool(o["keep_password"] | false);
+    int prio = int(o["priority"] | (100 + wifiApCount_));
+    ssid.trim();
+    if (ssid.isEmpty() || prio < 1 || prio > 5) continue;
+    if (keepPassword && pass.isEmpty()) {
+      bool foundOld = false;
+      for (uint8_t j = 0; j < oldCount && j < kWifiMaxAps; j++) {
+        if (oldAps[j].ssid == ssid) {
+          pass = oldAps[j].password;
+          foundOld = true;
+          break;
+        }
+      }
+      if (!foundOld || pass.isEmpty()) {
+        ack["ok"] = false;
+        ack["error"] = "keep_password_missing_old_password";
+        ack["ssid"] = ssid;
+        serializeJson(ack, outAckJson);
+        return false;
+      }
+    }
+    if (ssid.length() > 32 || pass.length() > 64) continue;
+    wifiAps_[wifiApCount_].ssid = ssid;
+    wifiAps_[wifiApCount_].password = pass;
+    wifiAps_[wifiApCount_].priority = prio;
+    wifiApCount_++;
+  }
+  if (wifiApCount_ == 0) {
+    ack["ok"] = false;
+    ack["error"] = "no_valid_ap";
+    serializeJson(ack, outAckJson);
+    return false;
+  }
+  sortWifiByPriority();
+  wifiManagedEnabled_ = true;
+  saveWifiConfig();
+  // Publish newest applied profile immediately so backend UI can refresh without ambiguity.
+  DynamicJsonDocument report(1024);
+  report["ts_ms"] = millis();
+  report["type"] = "wifi_profile";
+  report["managed"] = wifiManagedEnabled_;
+  report["connected_ssid"] = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "";
+  JsonArray arr = report.createNestedArray("aps");
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    JsonObject it = arr.createNestedObject();
+    it["ssid"] = wifiAps_[i].ssid;
+    it["priority"] = wifiAps_[i].priority;
+    const size_t passLen = wifiAps_[i].password.length();
+    it["has_password"] = passLen > 0;
+    it["password_len"] = static_cast<int>(passLen);
+  }
+  String profilePayload;
+  serializeJson(report, profilePayload);
+  publishUp("wifi/profile", profilePayload, false);
+
+  ack["ok"] = true;
+  ack["result"] = "config_saved_rebooting";
+  ack["count"] = wifiApCount_;
+  serializeJson(ack, outAckJson);
+  logLine("wifi config applied count=" + String(wifiApCount_));
+  return true;
+}
+
+bool NodeRemote::handleWifiListCommand(String& outAckJson) {
+  DynamicJsonDocument report(1024);
+  report["ts_ms"] = millis();
+  report["type"] = "wifi_profile";
+  report["managed"] = wifiManagedEnabled_;
+  report["connected_ssid"] = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "";
+  JsonArray arr = report.createNestedArray("aps");
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    JsonObject it = arr.createNestedObject();
+    it["ssid"] = wifiAps_[i].ssid;
+    it["priority"] = wifiAps_[i].priority;
+    const size_t passLen = wifiAps_[i].password.length();
+    it["has_password"] = passLen > 0;
+    it["password_len"] = static_cast<int>(passLen);
+  }
+  String profilePayload;
+  serializeJson(report, profilePayload);
+  const bool published = publishUp("wifi/profile", profilePayload, false);
+
+  StaticJsonDocument<256> ack;
+  ack["cmd"] = "wifi_list";
+  ack["ok"] = published;
+  ack["managed"] = wifiManagedEnabled_;
+  ack["count"] = wifiApCount_;
+  ack["result"] = published ? "profile_published" : "profile_publish_failed";
+  serializeJson(ack, outAckJson);
+  return published;
+}
+
 void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payload) {
   if (subTopic != "cmd" && !subTopic.startsWith("cmd/")) {
     return;
@@ -605,9 +888,49 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
   StaticJsonDocument<256> ack;
   ack["cmd"] = cmd;
 
+  if (otaInProgress_ || otaPending_) {
+    ack["ok"] = false;
+    ack["error"] = "ota_in_progress";
+    String outOtaBusy;
+    serializeJson(ack, outOtaBusy);
+    publishAck("cmd", outOtaBusy);
+    logLine("cmd rejected during ota");
+    return;
+  }
+
   if (cmd == "ping") {
     ack["ok"] = true;
     ack["pong"] = true;
+  } else if (cmd == "wifi_scan_start") {
+    String outAck;
+    if (handleWifiScanCommand(outAck)) {
+      const bool okAck = publishAck("cmd", outAck);
+      if (okAck) logLine("cmd ack sent");
+      return;
+    }
+    ack["ok"] = false;
+    ack["error"] = "wifi_scan_failed";
+  } else if (cmd == "wifi_apply_config") {
+    String outAck;
+    if (handleWifiApplyConfigCommand(payload, outAck)) {
+      const bool okAck = publishAck("cmd", outAck);
+      if (okAck) logLine("cmd ack sent");
+      // Allow ACK to flush, then reboot to apply policy consistently.
+      rebootPending_ = true;
+      rebootAtMs_ = millis() + 500;
+      return;
+    }
+    ack["ok"] = false;
+    ack["error"] = "wifi_apply_failed";
+  } else if (cmd == "wifi_list") {
+    String outAck;
+    if (handleWifiListCommand(outAck)) {
+      const bool okAck = publishAck("cmd", outAck);
+      if (okAck) logLine("cmd ack sent");
+      return;
+    }
+    ack["ok"] = false;
+    ack["error"] = "wifi_list_failed";
   } else if (cmd == "reset" || cmd == "reboot") {
     ack["ok"] = true;
     ack["result"] = "收到";
@@ -1029,20 +1352,132 @@ void NodeRemote::clearCredentials() {
   logLine("credentials cleared");
 }
 
+bool NodeRemote::loadWifiConfig() {
+  wifiApCount_ = 0;
+  wifiPrefs_.begin(kWifiPrefsNs, true);
+  const uint32_t managed = wifiPrefs_.getUInt("managed", 0);
+  const uint32_t count = wifiPrefs_.getUInt("count", 0);
+  const uint8_t c = static_cast<uint8_t>(count > kWifiMaxAps ? kWifiMaxAps : count);
+  for (uint8_t i = 0; i < c; i++) {
+    const String ks = "ssid_" + String(i);
+    const String kp = "pass_" + String(i);
+    const String kr = "prio_" + String(i);
+    const String ssid = wifiPrefs_.getString(ks.c_str(), "");
+    if (ssid.isEmpty()) continue;
+    wifiAps_[wifiApCount_].ssid = ssid;
+    wifiAps_[wifiApCount_].password = wifiPrefs_.getString(kp.c_str(), "");
+    wifiAps_[wifiApCount_].priority = static_cast<int>(wifiPrefs_.getInt(kr.c_str(), 100 + i));
+    wifiApCount_++;
+  }
+  wifiPrefs_.end();
+  sortWifiByPriority();
+  if (managed == 1U || wifiApCount_ > 0) {
+    wifiManagedEnabled_ = true;
+  }
+  return true;
+}
+
+bool NodeRemote::saveWifiConfig() {
+  wifiPrefs_.begin(kWifiPrefsNs, false);
+  wifiPrefs_.putUInt("managed", wifiManagedEnabled_ ? 1U : 0U);
+  wifiPrefs_.putUInt("count", wifiApCount_);
+  for (uint8_t i = 0; i < kWifiMaxAps; i++) {
+    const String ks = "ssid_" + String(i);
+    const String kp = "pass_" + String(i);
+    const String kr = "prio_" + String(i);
+    if (i < wifiApCount_) {
+      wifiPrefs_.putString(ks.c_str(), wifiAps_[i].ssid);
+      wifiPrefs_.putString(kp.c_str(), wifiAps_[i].password);
+      wifiPrefs_.putInt(kr.c_str(), wifiAps_[i].priority);
+    } else {
+      wifiPrefs_.remove(ks.c_str());
+      wifiPrefs_.remove(kp.c_str());
+      wifiPrefs_.remove(kr.c_str());
+    }
+  }
+  wifiPrefs_.end();
+  return true;
+}
+
+void NodeRemote::clearWifiConfig() {
+  wifiPrefs_.begin(kWifiPrefsNs, false);
+  wifiPrefs_.clear();
+  wifiPrefs_.end();
+  wifiApCount_ = 0;
+  for (uint8_t i = 0; i < kWifiMaxAps; i++) {
+    wifiAps_[i].ssid = "";
+    wifiAps_[i].password = "";
+    wifiAps_[i].priority = 100;
+  }
+  wifiManagedEnabled_ = false;
+  logLine("wifi config cleared");
+}
+
+void NodeRemote::sortWifiByPriority() {
+  if (wifiApCount_ <= 1) return;
+  for (uint8_t i = 0; i < wifiApCount_; i++) {
+    for (uint8_t j = i + 1; j < wifiApCount_; j++) {
+      if (wifiAps_[j].priority < wifiAps_[i].priority) {
+        WifiApConfig t = wifiAps_[i];
+        wifiAps_[i] = wifiAps_[j];
+        wifiAps_[j] = t;
+      }
+    }
+  }
+}
+
+bool NodeRemote::connectWifiFromManagedList() {
+  if (wifiApCount_ == 0) {
+    lastError_ = "wifi_list_empty";
+    logThrottled("wifi managed enabled but list is empty", lastWifiLogMs_, 10000);
+    return false;
+  }
+
+  WiFi.mode(WIFI_STA);
+  logLine("wifi connect policy: max_ap=5 rounds=" + String(wifiRoundsPerCycle_) + " timeout_ms=" + String(wifiPerApTimeoutMs_));
+  for (uint8_t round = 0; round < wifiRoundsPerCycle_; round++) {
+    for (uint8_t i = 0; i < wifiApCount_; i++) {
+      const String ssid = wifiAps_[i].ssid;
+      const String pass = wifiAps_[i].password;
+      logLine("wifi try round=" + String(round + 1) + "/" + String(wifiRoundsPerCycle_) + " ssid=" + ssid + " prio=" + String(wifiAps_[i].priority));
+      WiFi.disconnect(false, false);
+      delay(50);
+      if (pass.length() == 0) {
+        WiFi.begin(ssid.c_str());  // Open WiFi
+      } else {
+        WiFi.begin(ssid.c_str(), pass.c_str());
+      }
+      const uint32_t startMs = millis();
+      while (millis() - startMs < wifiPerApTimeoutMs_) {
+        if (WiFi.status() == WL_CONNECTED) {
+          logLine("wifi connected ssid=" + ssid + " ip=" + WiFi.localIP().toString());
+          return true;
+        }
+        delay(250);
+      }
+      logLine("wifi timeout ssid=" + ssid);
+    }
+    logLine("wifi round " + String(round + 1) + " complete");
+    delay(5000);
+  }
+  return false;
+}
+
 bool NodeRemote::checkBootRevokeWindow() {
   static constexpr int kBootButtonPin = 0;           // BOOT button on most ESP32 dev boards (IO0)
   static constexpr uint32_t kBootWaitWindowMs = 5000;
 
   pinMode(kBootButtonPin, INPUT_PULLUP);
-  logLine("startup window 5s: press BOOT(IO0) to clear NVS credentials");
+  logLine("startup window 5s: press BOOT(IO0) to clear all NVS settings (wifi + mqtt credentials)");
 
   const uint32_t started = millis();
   while (millis() - started < kBootWaitWindowMs) {
     // BOOT pressed => IO0 pulled LOW.
     if (digitalRead(kBootButtonPin) == LOW) {
-      logLine("BOOT(IO0) detected; clearing NVS credentials...");
+      logLine("BOOT(IO0) detected; clearing all NVS settings...");
       clearCredentials();
-      logLine("NVS credentials cleared by BOOT button");
+      clearWifiConfig();
+      logLine("all NVS settings cleared by BOOT button");
       delay(120);  // debounce / user feedback
       return true;
     }

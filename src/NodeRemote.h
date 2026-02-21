@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.4.9";
+  static constexpr const char* kVersion = "0.5.10";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -51,6 +51,17 @@ class NodeRemote {
   bool println(const String& message);
   bool println(const char* message);
 
+  // Built-in WiFi management (optional).
+  // When enabled, NodeRemote can maintain WiFi from a persisted AP list.
+  void setWifiManaged(bool enabled);
+  bool wifiAdd(const String& ssid, const String& password, int priority = 100);
+  bool wifiRemove(const String& ssid);
+  bool wifiClear();
+  bool wifiSetPriority(const String& ssid, int priority);
+  uint8_t wifiCount() const;
+  String wifiListJson() const;
+  bool wifiConnectNow();
+
   bool hasCredentials() const;
   String deviceUid() const;
   String mqttUsername() const;
@@ -68,12 +79,15 @@ class NodeRemote {
   static constexpr const char* kPrefsMqttUser = "mqtt_user";
   static constexpr const char* kPrefsMqttPass = "mqtt_pass";
   static constexpr const char* kPrefsDeviceUid = "device_uid";
+  static constexpr const char* kWifiPrefsNs = "espnode_wifi";
+  static constexpr uint8_t kWifiMaxAps = 5;
 
   WiFiClient netPlain_;
   WiFiClientSecure netTls_;
   PubSubClient mqtt_;
   bool ownsClient_ = true;
   Preferences prefs_;
+  Preferences wifiPrefs_;
   CommandHandler commandHandler_;
 
   String apiBaseUrl_;
@@ -111,6 +125,22 @@ class NodeRemote {
   bool mqttTlsInsecure_ = true;
   const char* mqttCaCertPem_ = nullptr;
 
+  struct WifiApConfig {
+    String ssid;
+    String password;
+    int priority = 100;
+  };
+  WifiApConfig wifiAps_[kWifiMaxAps];
+  uint8_t wifiApCount_ = 0;
+  bool wifiManagedEnabled_ = false;
+  bool wifiAutoRebootOnFail_ = true;
+  uint32_t wifiPerApTimeoutMs_ = 15000;
+  uint8_t wifiRoundsPerCycle_ = 2;
+  uint32_t wifiMinBootBeforeRebootMs_ = 30000;
+  uint32_t wifiBootStartedMs_ = 0;
+  uint32_t lastWifiManageAttemptMs_ = 0;
+  uint32_t wifiRetryBackoffMs_ = 5000;
+
   static NodeRemote* instance_;
 
   static void staticCallback(char* topic, uint8_t* payload, unsigned int length);
@@ -122,6 +152,14 @@ class NodeRemote {
   void updateTopicBases();
   bool loadCredentials();
   bool saveCredentials(const String& mqttUser, const String& mqttPass, const String& deviceUid);
+  bool loadWifiConfig();
+  bool saveWifiConfig();
+  void clearWifiConfig();
+  void sortWifiByPriority();
+  bool connectWifiFromManagedList();
+  bool handleWifiApplyConfigCommand(const String& payload, String& outAckJson);
+  bool handleWifiScanCommand(String& outAckJson);
+  bool handleWifiListCommand(String& outAckJson);
   bool checkBootRevokeWindow();
   String defaultClientId() const;
   void logLine(const String& msg);
