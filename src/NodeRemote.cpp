@@ -467,6 +467,22 @@ bool NodeRemote::connectMqtt() {
       logLine("status failed (on connect)");
     }
   }
+  // Device-side lifecycle event for backend audit (explicit reconnect signal).
+  StaticJsonDocument<192> ev;
+  const bool isReconnect = mqttEverConnected_;
+  ev["event"] = isReconnect ? "reconnected" : "connected";
+  ev["reason"] = "mqtt_connected";
+  ev["uptime_sec"] = millis() / 1000;
+  ev["rssi"] = WiFi.RSSI();
+  ev["ip"] = WiFi.localIP().toString();
+  String evPayload;
+  serializeJson(ev, evPayload);
+  if (publishUp("event", evPayload, false)) {
+    logLine(String("lifecycle event sent: ") + (isReconnect ? "reconnected" : "connected"));
+  } else {
+    logLine("lifecycle event send failed");
+  }
+  mqttEverConnected_ = true;
   return true;
 }
 

@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.5.10";
+  static constexpr const char* kVersion = "0.5.11";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -105,6 +105,7 @@ class NodeRemote {
   uint32_t statusIntervalMs_ = 60UL * 60UL * 1000UL;  // 1 hour
   uint32_t lastStatusMs_ = 0;
   uint32_t lastMqttReconnectAttemptMs_ = 0;
+  bool mqttEverConnected_ = false;
   uint32_t lastClaimAttemptMs_ = 0;
   uint32_t claimRetryIntervalMs_ = 5000;
   bool claimPermanentlyFailed_ = false;
