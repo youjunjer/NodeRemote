@@ -398,7 +398,7 @@ bool NodeRemote::ensureConnected() {
   const uint32_t now = millis();
   if (lastMqttReconnectAttemptMs_ != 0 && now - lastMqttReconnectAttemptMs_ < 3000) {
     lastError_ = "mqtt_reconnect_backoff";
-    logThrottled("mqtt reconnect backoff", lastMqttLogMs_, 10000);
+    logThrottled("NodeAnywhere reconnect backoff", lastMqttLogMs_, 10000);
     return false;
   }
   lastMqttReconnectAttemptMs_ = now;
@@ -424,35 +424,34 @@ bool NodeRemote::connectMqtt() {
   mqtt_.setServer(mqttHost_.c_str(), mqttPort_);
 
   const String clientId = defaultClientId();
-  logLine("mqtt connect host=" + mqttHost_ + " port=" + String(mqttPort_) + " clientId=" + clientId + " user=" + mqttUser_);
   if (!mqtt_.connect(clientId.c_str(), mqttUser_.c_str(), mqttPass_.c_str())) {
     const int st = mqtt_.state();
     if (st == 5) {
       // Not authorized: clear persisted credentials and force re-claim on next loop.
       clearCredentials();
       lastError_ = "mqtt_not_authorized_reclaiming";
-      logLine("mqtt auth failed (bad/removed device credentials); clearing local credentials and re-claiming");
+      logLine("NodeAnywhere auth failed (bad/removed device credentials); clearing local credentials and re-claiming");
       return false;
     }
     lastError_ = "mqtt_connect_failed_" + String(st);
     if (st == -4) {
-      logLine("mqtt connect failed: connection timeout (broker reachable but no response)");
+      logLine("NodeAnywhere connect failed: connection timeout (broker reachable but no response)");
     } else if (st == -2) {
-      logLine("mqtt connect failed: network/TLS connect failed (host/port/certificate/firewall)");
+      logLine("NodeAnywhere connect failed: network/TLS connect failed (host/port/certificate/firewall)");
     } else if (st == -1) {
-      logLine("mqtt connect failed: disconnected (retrying)");
+      logLine("NodeAnywhere connect failed: disconnected (retrying)");
     } else if (st == 2) {
-      logLine("mqtt connect failed: protocol rejected");
+      logLine("NodeAnywhere connect failed: protocol rejected");
     } else if (st == 3) {
-      logLine("mqtt connect failed: broker unavailable");
+      logLine("NodeAnywhere connect failed: broker unavailable");
     } else if (st == 4) {
-      logLine("mqtt connect failed: bad username/password");
+      logLine("NodeAnywhere connect failed: bad username/password");
     } else {
-      logLine("mqtt connect failed state=" + String(st));
+      logLine("NodeAnywhere connect failed state=" + String(st));
     }
     return false;
   }
-  logLine("mqtt connected");
+  logLine("NodeAnywhere connected");
   const bool okSub = subscribeDownTopics();
   if (!okSub) {
     return false;
@@ -467,22 +466,29 @@ bool NodeRemote::connectMqtt() {
       logLine("status failed (on connect)");
     }
   }
-  // Device-side lifecycle event for backend audit (explicit reconnect signal).
+  // Device-side lifecycle event for backend audit:
+  // - first_online: sent exactly once after first successful registration.
+  // - re_online: all subsequent online transitions (reboot/wakeup/reconnect).
   StaticJsonDocument<192> ev;
-  const bool isReconnect = mqttEverConnected_;
-  ev["event"] = isReconnect ? "reconnected" : "connected";
-  ev["reason"] = "mqtt_connected";
+  const bool firstOnlineSent = loadFirstOnlineSent();
+  const bool isFirstOnline = !firstOnlineSent;
+  ev["event"] = isFirstOnline ? "first_online" : "re_online";
+  ev["reason"] = "nodeanywhere_connected";
   ev["uptime_sec"] = millis() / 1000;
   ev["rssi"] = WiFi.RSSI();
   ev["ip"] = WiFi.localIP().toString();
   String evPayload;
   serializeJson(ev, evPayload);
   if (publishUp("event", evPayload, false)) {
-    logLine(String("lifecycle event sent: ") + (isReconnect ? "reconnected" : "connected"));
+    logLine(String("lifecycle event sent: ") + (isFirstOnline ? "first_online" : "re_online"));
+    if (isFirstOnline) {
+      if (!saveFirstOnlineSent(true)) {
+        logLine("warning: failed to persist first_online flag");
+      }
+    }
   } else {
     logLine("lifecycle event send failed");
   }
-  mqttEverConnected_ = true;
   return true;
 }
 
@@ -494,10 +500,9 @@ bool NodeRemote::subscribeDownTopics() {
   const bool ok = mqtt_.subscribe(filter.c_str(), 0);
   if (!ok) {
     lastError_ = "mqtt_subscribe_failed";
-    logLine("mqtt subscribe failed filter=" + filter);
+    logLine("NodeAnywhere subscribe failed filter=" + filter);
     return false;
   }
-  logLine("mqtt subscribed " + filter);
   return true;
 }
 
@@ -565,9 +570,9 @@ bool NodeRemote::claimDevice() {
       lastError_ = "claim_mqtt_provision_failed";
       noteClaimFailure(false);
       if (serverDetail.length() > 0) {
-        logLine("claim failed: server cannot issue mqtt credentials (" + serverDetail + ")");
+        logLine("claim failed: server cannot issue NodeAnywhere credentials (" + serverDetail + ")");
       } else {
-        logLine("claim failed: server cannot issue mqtt credentials");
+        logLine("claim failed: server cannot issue NodeAnywhere credentials");
       }
       return false;
     }
@@ -610,10 +615,10 @@ bool NodeRemote::claimDevice() {
     const String provErr = doc["mqtt_provision_error"] | "";
     if (!provErr.isEmpty()) {
       lastError_ = "claim_no_mqtt_credentials_" + provErr;
-      logLine("claim failed: missing mqtt credentials from server, provision error=" + provErr);
+      logLine("claim failed: missing NodeAnywhere credentials from server, provision error=" + provErr);
     } else {
       lastError_ = "claim_no_mqtt_credentials";
-      logLine("claim failed: missing mqtt credentials from server");
+      logLine("claim failed: missing NodeAnywhere credentials from server");
     }
     noteClaimFailure(true);
     return false;
@@ -629,7 +634,7 @@ bool NodeRemote::claimDevice() {
   mqttPass_ = pass;
   updateTopicBases();
   noteClaimSuccess();
-  logLine("claim success mqtt_user=" + mqttUser_);
+  logLine("claim success node_user=" + mqttUser_);
   return true;
 }
 
@@ -695,6 +700,28 @@ void NodeRemote::handleMqttMessage(const String& topic, const String& payload) {
     otaPendingPayload_ = payload;
     otaPending_ = true;
     logLine("ota request queued");
+    return;
+  }
+  if (subTopic == "serial" || subTopic == "serial/in") {
+    String serialPayload = payload;
+    if (payload.startsWith("{")) {
+      StaticJsonDocument<384> doc;
+      if (deserializeJson(doc, payload) == DeserializationError::Ok) {
+        const char* p = doc["payload"] | doc["message"] | doc["msg"] | nullptr;
+        if (p != nullptr) {
+          serialPayload = String(p);
+        }
+      }
+    }
+    serialInPush(serialPayload);
+    StaticJsonDocument<192> ack;
+    ack["ok"] = true;
+    ack["bytes"] = static_cast<int>(serialPayload.length());
+    ack["queued"] = static_cast<int>(serialInSize_);
+    String out;
+    serializeJson(ack, out);
+    publishAck("serial", out);
+    logLine("serial input queued");
     return;
   }
   commandHandler_(subTopic, payload);
@@ -1024,7 +1051,7 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
     logLine("cmd ack sent");
   } else {
     lastError_ = "cmd_ack_publish_failed";
-    logLine("cmd ack publish failed (maybe payload too large or mqtt disconnected)");
+    logLine("cmd ack publish failed (maybe payload too large or NodeAnywhere disconnected)");
   }
 }
 
@@ -1108,7 +1135,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
 
   if (!mqtt_.connected()) {
     lastError_ = "ota_mqtt_not_connected";
-    logLine("ota mqtt not connected");
+    logLine("ota NodeAnywhere not connected");
     return false;
   }
 
@@ -1306,6 +1333,54 @@ bool NodeRemote::println(const char* message) {
   return println(String(message ? message : ""));
 }
 
+bool NodeRemote::serialInAvailable() const {
+  return serialInSize_ > 0;
+}
+
+uint8_t NodeRemote::serialInCount() const {
+  return serialInSize_;
+}
+
+String NodeRemote::serialInRead() {
+  String out;
+  if (!serialInRead(out)) {
+    return String("");
+  }
+  return out;
+}
+
+bool NodeRemote::serialInRead(String& out) {
+  if (serialInSize_ == 0) {
+    out = "";
+    return false;
+  }
+  out = serialInQueue_[serialInHead_];
+  serialInQueue_[serialInHead_] = "";
+  serialInHead_ = (serialInHead_ + 1) % kSerialInQueueMax;
+  serialInSize_--;
+  return true;
+}
+
+void NodeRemote::serialInClear() {
+  for (uint8_t i = 0; i < kSerialInQueueMax; i++) {
+    serialInQueue_[i] = "";
+  }
+  serialInHead_ = 0;
+  serialInTail_ = 0;
+  serialInSize_ = 0;
+}
+
+void NodeRemote::serialInPush(const String& payload) {
+  if (serialInSize_ >= kSerialInQueueMax) {
+    // Full queue: drop oldest to keep latest backend input.
+    serialInHead_ = (serialInHead_ + 1) % kSerialInQueueMax;
+    serialInSize_--;
+  }
+  serialInQueue_[serialInTail_] = payload;
+  serialInTail_ = (serialInTail_ + 1) % kSerialInQueueMax;
+  serialInSize_++;
+}
+
 bool NodeRemote::sendHeartbeat() {
   StaticJsonDocument<192> doc;
   doc["uptime_sec"] = static_cast<uint32_t>(millis() / 1000);
@@ -1362,6 +1437,7 @@ void NodeRemote::clearCredentials() {
   prefs_.remove(kPrefsMqttUser);
   prefs_.remove(kPrefsMqttPass);
   prefs_.remove(kPrefsDeviceUid);
+  prefs_.remove(kPrefsFirstOnlineSent);
   prefs_.end();
   mqttUser_ = "";
   mqttPass_ = "";
@@ -1484,7 +1560,7 @@ bool NodeRemote::checkBootRevokeWindow() {
   static constexpr uint32_t kBootWaitWindowMs = 5000;
 
   pinMode(kBootButtonPin, INPUT_PULLUP);
-  logLine("startup window 5s: press BOOT(IO0) to clear all NVS settings (wifi + mqtt credentials)");
+  logLine("startup window 5s: press BOOT(IO0) to clear all NVS settings (wifi + NodeAnywhere credentials)");
 
   const uint32_t started = millis();
   while (millis() - started < kBootWaitWindowMs) {
@@ -1539,8 +1615,24 @@ bool NodeRemote::saveCredentials(const String& mqttUser, const String& mqttPass,
   const bool okUser = prefs_.putString(kPrefsMqttUser, mqttUser) > 0;
   const bool okPass = prefs_.putString(kPrefsMqttPass, mqttPass) > 0;
   const bool okUid = prefs_.putString(kPrefsDeviceUid, deviceUid) > 0;
+  // New identity should emit first_online once.
+  prefs_.putBool(kPrefsFirstOnlineSent, false);
   prefs_.end();
   return okUser && okPass && okUid;
+}
+
+bool NodeRemote::loadFirstOnlineSent() {
+  prefs_.begin(kPrefsNs, true);
+  const bool sent = prefs_.getBool(kPrefsFirstOnlineSent, false);
+  prefs_.end();
+  return sent;
+}
+
+bool NodeRemote::saveFirstOnlineSent(bool sent) {
+  prefs_.begin(kPrefsNs, false);
+  const size_t n = prefs_.putBool(kPrefsFirstOnlineSent, sent);
+  prefs_.end();
+  return n > 0;
 }
 
 String NodeRemote::defaultClientId() const {

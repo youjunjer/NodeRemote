@@ -9,7 +9,7 @@
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "0.5.11";
+  static constexpr const char* kVersion = "0.5.14";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();
@@ -50,6 +50,12 @@ class NodeRemote {
   // Publish plain text to `devices/<UID>/up/console` so users can view logs in the web console.
   bool println(const String& message);
   bool println(const char* message);
+  // Polling APIs for backend serial-in messages (no callback needed).
+  bool serialInAvailable() const;
+  uint8_t serialInCount() const;
+  String serialInRead();
+  bool serialInRead(String& out);
+  void serialInClear();
 
   // Built-in WiFi management (optional).
   // When enabled, NodeRemote can maintain WiFi from a persisted AP list.
@@ -79,8 +85,11 @@ class NodeRemote {
   static constexpr const char* kPrefsMqttUser = "mqtt_user";
   static constexpr const char* kPrefsMqttPass = "mqtt_pass";
   static constexpr const char* kPrefsDeviceUid = "device_uid";
+  // Preferences key length on ESP32 is limited; keep <= 15 chars.
+  static constexpr const char* kPrefsFirstOnlineSent = "first_online";
   static constexpr const char* kWifiPrefsNs = "espnode_wifi";
   static constexpr uint8_t kWifiMaxAps = 5;
+  static constexpr uint8_t kSerialInQueueMax = 8;
 
   WiFiClient netPlain_;
   WiFiClientSecure netTls_;
@@ -105,7 +114,6 @@ class NodeRemote {
   uint32_t statusIntervalMs_ = 60UL * 60UL * 1000UL;  // 1 hour
   uint32_t lastStatusMs_ = 0;
   uint32_t lastMqttReconnectAttemptMs_ = 0;
-  bool mqttEverConnected_ = false;
   uint32_t lastClaimAttemptMs_ = 0;
   uint32_t claimRetryIntervalMs_ = 5000;
   bool claimPermanentlyFailed_ = false;
@@ -121,6 +129,10 @@ class NodeRemote {
   uint32_t lastOtaProgressMs_ = 0;
   bool otaPending_ = false;
   String otaPendingPayload_;
+  String serialInQueue_[kSerialInQueueMax];
+  uint8_t serialInHead_ = 0;
+  uint8_t serialInTail_ = 0;
+  uint8_t serialInSize_ = 0;
 
   bool mqttTlsEnabled_ = true;
   bool mqttTlsInsecure_ = true;
@@ -153,6 +165,8 @@ class NodeRemote {
   void updateTopicBases();
   bool loadCredentials();
   bool saveCredentials(const String& mqttUser, const String& mqttPass, const String& deviceUid);
+  bool loadFirstOnlineSent();
+  bool saveFirstOnlineSent(bool sent);
   bool loadWifiConfig();
   bool saveWifiConfig();
   void clearWifiConfig();
@@ -165,6 +179,7 @@ class NodeRemote {
   String defaultClientId() const;
   void logLine(const String& msg);
   void logThrottled(const String& msg, uint32_t& lastMs, uint32_t everyMs);
+  void serialInPush(const String& payload);
 
   Print* logOut_ = &Serial;
   bool debugEnabled_ = true;

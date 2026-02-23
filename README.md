@@ -3,6 +3,11 @@
 ESP32 library for NodeAnywhere device claim + remote control over MQTT:
 `HTTP claim -> receive per-device MQTT credentials -> MQTT up/down`.
 
+## Required Backend
+- This library is designed to work with **NodeAnywhere backend**.
+- Backend URL: **https://node.mqttgo.io**
+- You need to create device Token + Device UID from NodeAnywhere first, then flash your sketch.
+
 ## Version Note
 - v0.5.10 includes first-stage built-in WiFi management in NodeRemote.
 - Device can maintain up to 5 AP profiles in NVS and auto-retry by priority.

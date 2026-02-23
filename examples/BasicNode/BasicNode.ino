@@ -2,6 +2,7 @@
 #include <NodeRemote.h> 
 
 // Remote-managed 最小化測試範例:
+// 本程式庫需搭配 NodeAnywhere 後台使用：https://node.mqttgo.io
 // 1) 在 NodeAnywhere「我的裝置 -> 新增裝置」取得一次性 Token 與 Device UID
 // 2) 貼到下方後燒錄，即可完成首次註冊與連線
 // 3) 首次先提供一組可上網的 WiFi（bootstrap），之後可由雲端下發 wifi_apply_config 來改

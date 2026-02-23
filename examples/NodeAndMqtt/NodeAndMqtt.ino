@@ -2,6 +2,7 @@
 #include <NodeRemote.h>
 
 // NodeRemote + 自有 MQTT 範例：
+// 本程式庫需搭配 NodeAnywhere 後台使用：https://node.mqttgo.io
 // - NodeRemote 負責裝置註冊、WiFi 管理、心跳、遠端命令
 // - MQTTClient 負責你自己的業務資料收發
 // 先到後台取得一次性 Token 與 Device UID，完成首次註冊
