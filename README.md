@@ -1,7 +1,7 @@
 # NodeRemote
 
-ESP32 library for NodeAnywhere device claim + remote control over MQTT:
-`HTTP claim -> receive per-device MQTT credentials -> MQTT up/down`.
+ESP32 library for NodeAnywhere device claim + remote control.
+Use NodeAnywhere to register devices, manage remote commands, and OTA.
 
 ## Required Backend
 - This library is designed to work with **NodeAnywhere backend**.
@@ -14,10 +14,9 @@ ESP32 library for NodeAnywhere device claim + remote control over MQTT:
 
 ## Features
 - Wi-Fi handled by your sketch (`.ino`)
-- Device claim via HTTP `POST /api/devices/claim`
-- Store MQTT credential in NVS (`Preferences`)
-- MQTT reconnect and auto subscribe
-- Topic layout aligned with your web platform
+- Device claim from NodeAnywhere token + device UID
+- Store device credentials in NVS (`Preferences`)
+- Auto reconnect to backend service
 - Periodic heartbeat JSON (default: 60s)
 - Periodic status snapshot JSON (default: 1 hour)
 - Remote commands (default handler):
@@ -62,7 +61,7 @@ void loop() {
 
 Command handler:
 - Optional. If you don't set one, a default handler is enabled.
-- Default commands (topic: `devices/<UID>/down/cmd`):
+- Default commands:
   - `ping` -> ACK ok + pong
   - `info` -> ACK with summary
   - `sleep 300` -> ACK then deep sleep
@@ -78,21 +77,18 @@ Command handler:
 - Use this when a device was removed/revoked and you need to re-register with a new Token + UID.
 
 ## OTA
-- Downlink topic: `devices/<UID>/down/ota`
 - Payload: JSON with `job_uid`, `url`, `sha256`, `size` (and optional `version`, `firmware_uid`)
 - Behavior:
   - downloads firmware (HTTP/HTTPS)
   - validates `sha256`
   - flashes and reboots
-  - reports progress/result:
-    - `devices/<UID>/up/ota/progress`
-    - `devices/<UID>/up/ota/result`
+  - reports progress/result back to NodeAnywhere
 
 Send commands/OTA:
 - Use the NodeAnywhere web UI (device page -> Remote Control / OTA).
 
-WiFi management command payloads (MQTT `down/cmd` JSON):
+WiFi management command payloads:
 - `{"cmd":"wifi_scan_start"}`
-  - publishes scan result to `devices/<UID>/up/wifi/scan_result`
+  - device reports scan result to NodeAnywhere
 - `{"cmd":"wifi_apply_config","aps":[{"ssid":"A","password":"P","priority":1}, ...]}`
   - accepts 1~5 AP entries, saves to NVS, and reboots
