@@ -5,8 +5,8 @@
 // 本程式庫需搭配 NodeAnywhere 後台使用：https://node.mqttgo.io
 // 1) 在 NodeAnywhere「我的裝置 -> 新增裝置」取得一次性 Token 與 Device UID
 // 2) 貼到下方後燒錄，完成首次註冊
-// 3) 後台送到裝置 topic: devices/<UID>/down/serial 或 devices/<UID>/down/serial/in
-// 4) 使用者程式不需要 callback，透過 polling 讀取 serial-in 訊息
+// 3) 後台可輸入序列資料到裝置
+// 4) 使用者程式不需要 callback，透過 polling 讀取輸入內容
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
 const char* CLAIM_TOKEN = "PASTE_CLAIM_TOKEN";
@@ -30,10 +30,10 @@ void setup() {
 }
 
 void loop() {
-  // node.loop() 必須呼叫，負責 WiFi/MQTT/心跳/命令/OTA。
+  // node.loop() 必須持續呼叫，讓 NodeRemote 維持服務運作。
   node.loop();
 
-  // 無 callback 模式：輪詢讀取後台傳來的 serial-in 訊息。
+  // 無 callback 模式：輪詢讀取後台傳來的序列輸入。
   while (node.serialInAvailable()) {
     String payload = node.serialInRead();
     Serial.print("[SerialIn] ");

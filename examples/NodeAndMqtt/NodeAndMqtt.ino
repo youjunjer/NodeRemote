@@ -1,10 +1,10 @@
 #include <WiFi.h>
 #include <NodeRemote.h>
 
-// NodeRemote + 自有 MQTT 範例：
+// NodeRemote + 使用者自有資料通道範例：
 // 本程式庫需搭配 NodeAnywhere 後台使用：https://node.mqttgo.io
-// - NodeRemote 負責裝置註冊、WiFi 管理、心跳、遠端命令
-// - MQTTClient 負責你自己的業務資料收發
+// - NodeRemote 負責裝置管理與遠端能力
+// - MQTTClient 區塊僅示範你自己的資料收發
 // 先到後台取得一次性 Token 與 Device UID，完成首次註冊
 const char* CLAIM_TOKEN = "PASTE_CLAIM_TOKEN";
 const char* DEVICE_UID = "PASTE_DEVICE_UID";
@@ -39,7 +39,7 @@ void setup() {
   // 首次上線後，可由後台下發 wifi_apply_config 重新設定/排序。
   node.wifiAdd(WIFI_SSID, WIFI_PASS, 1);
 
-  // 啟動 NodeRemote（claim / MQTT 控制通道）
+  // 啟動 NodeRemote（claim / 服務連線）
   if (!node.begin()) {
     Serial.print("Node Remote begin not ready yet: ");
     Serial.print(node.lastError());
@@ -48,7 +48,7 @@ void setup() {
 }
 
 void loop() {
-  // NodeRemote 維護（WiFi / MQTT 控制通道 / 心跳 / OTA / 命令）
+  // NodeRemote 維護（請持續呼叫）
   node.loop();
 
   // 自有 MQTT 只在 WiFi 可用時重連

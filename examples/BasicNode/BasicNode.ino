@@ -6,7 +6,7 @@
 // 1) 在 NodeAnywhere「我的裝置 -> 新增裝置」取得一次性 Token 與 Device UID
 // 2) 貼到下方後燒錄，即可完成首次註冊與連線
 // 3) 首次先提供一組可上網的 WiFi（bootstrap），之後可由雲端下發 wifi_apply_config 來改
-// 4) 上線後可在 NodeAnywhere 後台查看裝置狀態、WiFi 訊號、電量等資訊，並下發命令（如 OTA）
+// 4) 上線後可在 NodeAnywhere 後台查看裝置狀態、WiFi 訊號，並下發命令（如 OTA）
 // 5) 更多細節與進階功能請參考 NodeRemote 官方網站：https://Node.MQTTgo.io
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
@@ -28,7 +28,7 @@ void setup() {
   // 首次上線後，可由後台下發 wifi_apply_config 重新設定/排序。
   node.wifiAdd(WIFI_SSID, WIFI_PASS, 1);
 
-  // 開始 claim（首次）/登入（後續）與 MQTT 控制通道
+  // 開始 claim（首次）/登入（後續）
   if (!node.begin()) {
     Serial.print("NodeRemote not ready yet: ");
     Serial.println(node.lastError());
@@ -36,10 +36,7 @@ void setup() {
 }
 
 void loop() {
-  // node.loop必須呼叫，負責：
-  // - WiFi 及MQTT 管理
-  // - 心跳、遠端命令接收與回覆
-  // - OTA 線上更新
+  // node.loop 必須持續呼叫，讓 NodeRemote 維持服務運作
   node.loop();
   // 短延遲避免忙迴圈，勿使用過長 delay
   delay(100);
