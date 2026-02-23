@@ -9,7 +9,7 @@ Use NodeAnywhere to register devices, manage remote commands, and OTA.
 - You need to create device Token + Device UID from NodeAnywhere first, then flash your sketch.
 
 ## Version Note
-- v0.5.10 includes first-stage built-in WiFi management in NodeRemote.
+- v1.0.0 is the first stable release.
 - Device can maintain up to 5 AP profiles in NVS and auto-retry by priority.
 
 ## Features
