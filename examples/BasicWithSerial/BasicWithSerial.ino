@@ -38,6 +38,8 @@ void loop() {
     String payload = node.serialInRead();
     Serial.print("[SerialIn] ");
     Serial.println(payload);
+    // 將收到的訊息發送回後台echo，進行測試
+    node.println("[echo] " + payload);
 
     // 你可以在這裡做自己的處理邏輯，例如:
     // if (payload == "led:on") { ... }
