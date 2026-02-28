@@ -2,9 +2,47 @@
 
 #include <Arduino.h>
 #include <functional>
-#include <Preferences.h>
 #include <PubSubClient.h>
+
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#include <LittleFS.h>
+
+// ESP8266 compatibility shim for ESP32 Preferences API subset used by NodeRemote.
+class Preferences {
+ public:
+  bool begin(const char* ns, bool readOnly = false);
+  void end();
+  String getString(const char* key, const String& defaultValue = String()) const;
+  uint32_t getUInt(const char* key, uint32_t defaultValue = 0) const;
+  int32_t getInt(const char* key, int32_t defaultValue = 0) const;
+  bool getBool(const char* key, bool defaultValue = false) const;
+  size_t putString(const char* key, const String& value);
+  size_t putUInt(const char* key, uint32_t value);
+  size_t putInt(const char* key, int32_t value);
+  size_t putBool(const char* key, bool value);
+  bool remove(const char* key);
+  void clear();
+
+ private:
+  static constexpr uint8_t kMaxEntries = 32;
+  static bool fsReady_;
+  String ns_;
+  bool readOnly_ = false;
+  bool dirty_ = false;
+  uint8_t count_ = 0;
+  String keys_[kMaxEntries];
+  String vals_[kMaxEntries];
+
+  String filePath_() const;
+  int findKey_(const String& key) const;
+  bool load_();
+  bool save_();
+};
+#else
+#include <Preferences.h>
 #include <WiFi.h>
+#endif
 #include <WiFiClientSecure.h>
 
 class NodeRemote {

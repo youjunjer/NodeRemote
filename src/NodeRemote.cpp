@@ -5,10 +5,14 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
+#if defined(ESP32)
 #include <mbedtls/sha256.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 extern "C" uint32_t esp_random(void);
+#elif defined(ESP8266)
+#include <Hash.h>
+#endif
 
 static const char* kDefaultMqttHost = "node.mqttgo.io";
 static const uint16_t kDefaultMqttPort = 8883;
@@ -16,6 +20,9 @@ static const uint16_t kDefaultMqttPort = 8883;
 static const char* kDefaultApiBaseUrl = "https://node.mqttgo.io";
 
 static String chipModelString() {
+#if defined(ESP8266)
+  return "ESP8266";
+#else
   // Avoid relying on IDF-only chip info headers/types (esp_chip_info_t/CHIP_*) because
   // Arduino-ESP32 exposes stable helpers via ESP.* across core versions.
   //
@@ -26,9 +33,17 @@ static String chipModelString() {
     return model;
   }
   return "ESP32";
+#endif
 }
 
-static String resetReasonString(esp_reset_reason_t r) {
+static String resetReasonString() {
+#if defined(ESP8266)
+  String reason = ESP.getResetReason();
+  reason.trim();
+  if (!reason.isEmpty()) return reason;
+  return "unknown";
+#else
+  const esp_reset_reason_t r = esp_reset_reason();
   switch (r) {
     case ESP_RST_POWERON:
       return "poweron";
@@ -53,6 +68,7 @@ static String resetReasonString(esp_reset_reason_t r) {
     default:
       return "unknown";
   }
+#endif
 }
 
 static String sha256HexLower(const uint8_t* digest32) {
@@ -65,6 +81,147 @@ static String sha256HexLower(const uint8_t* digest32) {
   out[64] = '\0';
   return String(out);
 }
+
+#if defined(ESP8266)
+bool Preferences::fsReady_ = false;
+
+bool Preferences::begin(const char* ns, bool readOnly) {
+  ns_ = String(ns ? ns : "");
+  readOnly_ = readOnly;
+  dirty_ = false;
+  count_ = 0;
+  if (!fsReady_) {
+    fsReady_ = LittleFS.begin();
+  }
+  if (!fsReady_) {
+    return false;
+  }
+  return load_();
+}
+
+void Preferences::end() {
+  if (!readOnly_ && dirty_) {
+    save_();
+  }
+}
+
+String Preferences::filePath_() const {
+  String p = "/nrp_";
+  p += ns_;
+  p += ".cfg";
+  return p;
+}
+
+int Preferences::findKey_(const String& key) const {
+  for (uint8_t i = 0; i < count_; i++) {
+    if (keys_[i] == key) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+bool Preferences::load_() {
+  count_ = 0;
+  File f = LittleFS.open(filePath_(), "r");
+  if (!f) return true;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line.isEmpty()) continue;
+    const int sep = line.indexOf('\t');
+    if (sep <= 0) continue;
+    if (count_ >= kMaxEntries) break;
+    keys_[count_] = line.substring(0, sep);
+    vals_[count_] = line.substring(sep + 1);
+    count_++;
+  }
+  f.close();
+  return true;
+}
+
+bool Preferences::save_() {
+  File f = LittleFS.open(filePath_(), "w");
+  if (!f) return false;
+  for (uint8_t i = 0; i < count_; i++) {
+    f.print(keys_[i]);
+    f.print('\t');
+    f.print(vals_[i]);
+    f.print('\n');
+  }
+  f.close();
+  dirty_ = false;
+  return true;
+}
+
+String Preferences::getString(const char* key, const String& defaultValue) const {
+  const int idx = findKey_(String(key ? key : ""));
+  if (idx < 0) return defaultValue;
+  return vals_[idx];
+}
+
+uint32_t Preferences::getUInt(const char* key, uint32_t defaultValue) const {
+  const String s = getString(key, "");
+  if (s.isEmpty()) return defaultValue;
+  return static_cast<uint32_t>(strtoul(s.c_str(), nullptr, 10));
+}
+
+int32_t Preferences::getInt(const char* key, int32_t defaultValue) const {
+  const String s = getString(key, "");
+  if (s.isEmpty()) return defaultValue;
+  return static_cast<int32_t>(strtol(s.c_str(), nullptr, 10));
+}
+
+bool Preferences::getBool(const char* key, bool defaultValue) const {
+  const String s = getString(key, "");
+  if (s.isEmpty()) return defaultValue;
+  return !(s == "0" || s == "false" || s == "False");
+}
+
+size_t Preferences::putString(const char* key, const String& value) {
+  if (readOnly_) return 0;
+  const String k = String(key ? key : "");
+  if (k.isEmpty()) return 0;
+  int idx = findKey_(k);
+  if (idx < 0) {
+    if (count_ >= kMaxEntries) return 0;
+    idx = count_++;
+    keys_[idx] = k;
+  }
+  vals_[idx] = value;
+  dirty_ = true;
+  return value.length();
+}
+
+size_t Preferences::putUInt(const char* key, uint32_t value) {
+  return putString(key, String(value));
+}
+
+size_t Preferences::putInt(const char* key, int32_t value) {
+  return putString(key, String(value));
+}
+
+size_t Preferences::putBool(const char* key, bool value) {
+  return putString(key, value ? "1" : "0");
+}
+
+bool Preferences::remove(const char* key) {
+  if (readOnly_) return false;
+  const int idx = findKey_(String(key ? key : ""));
+  if (idx < 0) return false;
+  for (uint8_t i = static_cast<uint8_t>(idx); i + 1 < count_; i++) {
+    keys_[i] = keys_[i + 1];
+    vals_[i] = vals_[i + 1];
+  }
+  count_--;
+  dirty_ = true;
+  return true;
+}
+
+void Preferences::clear() {
+  if (readOnly_) return;
+  count_ = 0;
+  dirty_ = true;
+}
+#endif
 
 NodeRemote* NodeRemote::instance_ = nullptr;
 
@@ -291,14 +448,24 @@ void NodeRemote::loop() {
     sleepAtMs_ = 0;
     logLine("enter deep sleep");
     if (sleepWakeUs_ > 0) {
+#if defined(ESP8266)
+      ESP.deepSleep(sleepWakeUs_);
+#else
       esp_sleep_enable_timer_wakeup(sleepWakeUs_);
+#endif
+    } else {
+#if defined(ESP8266)
+      ESP.deepSleep(0);
+#endif
     }
     // Best-effort disconnect so broker sees clean session end.
     mqtt_.disconnect();
     delay(50);
+#if defined(ESP32)
     esp_deep_sleep_start();
     // Should never return.
     ESP.restart();
+#endif
   }
 
   if (wipeIdentityPending_ && wipeIdentityAtMs_ != 0 && millis() >= wipeIdentityAtMs_) {
@@ -415,7 +582,12 @@ bool NodeRemote::connectMqtt() {
     if (mqttTlsInsecure_) {
       netTls_.setInsecure();
     } else if (mqttCaCertPem_ != nullptr) {
+#if defined(ESP32)
       netTls_.setCACert(mqttCaCertPem_);
+#else
+      // ESP8266 BearSSL path differs; keep insecure mode by default.
+      netTls_.setInsecure();
+#endif
     } else {
       // No CA provided; fallback to insecure rather than hard-failing silently.
       netTls_.setInsecure();
@@ -526,7 +698,11 @@ bool NodeRemote::claimDevice() {
     if (mqttTlsInsecure_) {
       netTls_.setInsecure();
     } else if (mqttCaCertPem_ != nullptr) {
+#if defined(ESP32)
       netTls_.setCACert(mqttCaCertPem_);
+#else
+      netTls_.setInsecure();
+#endif
     } else {
       netTls_.setInsecure();
     }
@@ -989,7 +1165,7 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
     const String chip = chipModelString();
     String mac = WiFi.macAddress();
     mac.replace(":", "");
-    const String resetReason = resetReasonString(esp_reset_reason());
+    const String resetReason = resetReasonString();
 
     ack["ok"] = true;
     ack["fw"] = String("NodeRemote/") + kVersion;
@@ -1152,7 +1328,11 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     if (mqttTlsInsecure_) {
       secure.setInsecure();
     } else if (mqttCaCertPem_ != nullptr) {
+#if defined(ESP32)
       secure.setCACert(mqttCaCertPem_);
+#else
+      secure.setInsecure();
+#endif
     } else {
       secure.setInsecure();
     }
@@ -1199,10 +1379,15 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     return false;
   }
 
+#if defined(ESP32)
   mbedtls_sha256_context sha;
   mbedtls_sha256_init(&sha);
   // Use non-*_ret variants for compatibility with older Arduino-ESP32 toolchains.
   mbedtls_sha256_starts(&sha, 0);
+#elif defined(ESP8266)
+  SHA256Builder sha;
+  sha.begin();
+#endif
 
   WiFiClient* stream = http.getStreamPtr();
   const size_t bufSize = 1024;
@@ -1235,7 +1420,11 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
       continue;
     }
 
+#if defined(ESP32)
     mbedtls_sha256_update(&sha, buf, static_cast<size_t>(n));
+#elif defined(ESP8266)
+    sha.add(buf, static_cast<size_t>(n));
+#endif
     const size_t w = Update.write(buf, static_cast<size_t>(n));
     if (w != static_cast<size_t>(n)) {
       lastError_ = "ota_update_write_failed";
@@ -1271,13 +1460,6 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   free(buf);
   http.end();
 
-  uint8_t digest[32];
-  mbedtls_sha256_finish(&sha, digest);
-  mbedtls_sha256_free(&sha);
-  const String gotSha = sha256HexLower(digest);
-  String exp = expectSha;
-  exp.toLowerCase();
-
   if (totalLen > 0 && static_cast<int>(written) != totalLen) {
     lastError_ = "ota_size_mismatch";
     logLine("ota size mismatch wrote=" + String(written) + " expected=" + String(totalLen));
@@ -1287,6 +1469,20 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     return false;
   }
 
+#if defined(ESP32)
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&sha, digest);
+  mbedtls_sha256_free(&sha);
+  String gotSha = sha256HexLower(digest);
+  gotSha.toLowerCase();
+#elif defined(ESP8266)
+  sha.calculate();
+  String gotSha = sha.toString();
+  gotSha.toLowerCase();
+#endif
+
+  String exp = expectSha;
+  exp.toLowerCase();
   if (gotSha != exp) {
     lastError_ = "ota_sha256_mismatch";
     logLine("ota sha mismatch");
@@ -1532,7 +1728,11 @@ bool NodeRemote::connectWifiFromManagedList() {
       const String ssid = wifiAps_[i].ssid;
       const String pass = wifiAps_[i].password;
       logLine("wifi try round=" + String(round + 1) + "/" + String(wifiRoundsPerCycle_) + " ssid=" + ssid + " prio=" + String(wifiAps_[i].priority));
+#if defined(ESP8266)
+      WiFi.disconnect(false);
+#else
       WiFi.disconnect(false, false);
+#endif
       delay(50);
       if (pass.length() == 0) {
         WiFi.begin(ssid.c_str());  // Open WiFi
@@ -1556,7 +1756,7 @@ bool NodeRemote::connectWifiFromManagedList() {
 }
 
 bool NodeRemote::checkBootRevokeWindow() {
-  static constexpr int kBootButtonPin = 0;           // BOOT button on most ESP32 dev boards (IO0)
+  static constexpr int kBootButtonPin = 0;           // BOOT/FLASH button on many ESP32/ESP8266 dev boards (IO0/GPIO0)
   static constexpr uint32_t kBootWaitWindowMs = 5000;
 
   pinMode(kBootButtonPin, INPUT_PULLUP);
@@ -1637,10 +1837,15 @@ bool NodeRemote::saveFirstOnlineSent(bool sent) {
 
 String NodeRemote::defaultClientId() const {
   // Keep under typical MQTT client id limits (often 23).
-  // Include UID suffix + efuse suffix + short random for collision avoidance.
+  // Include UID suffix + chip/mac suffix + short random for collision avoidance.
+#if defined(ESP8266)
+  uint32_t macSuffix = static_cast<uint32_t>(ESP.getChipId() & 0xFFFF);
+  uint16_t r = static_cast<uint16_t>(random(0, 0x10000));
+#else
   uint64_t mac = ESP.getEfuseMac();
   uint32_t macSuffix = static_cast<uint32_t>(mac & 0xFFFF);
   uint16_t r = static_cast<uint16_t>(esp_random() & 0xFFFF);
+#endif
 
   String uid = deviceUid_;
   uid.replace("-", "");

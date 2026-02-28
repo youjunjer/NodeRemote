@@ -1,6 +1,6 @@
 # NodeRemote
 
-ESP32 library for NodeAnywhere device claim + remote control.
+ESP32/ESP8266 library for NodeAnywhere device claim + remote control.
 Use NodeAnywhere to register devices, manage remote commands, and OTA.
 
 ## Required Backend
@@ -25,7 +25,7 @@ Use NodeAnywhere to register devices, manage remote commands, and OTA.
   - `sleep <sec>` (60~86400)
   - `reset`
 - `node.println(...)` -> uplink console logs
-- OTA job (download + sha256 verify + reboot)
+- OTA job (download + reboot)
 - Serial debug logs (enabled by default)
 - Built-in WiFi management (optional):
   - up to 5 AP profiles
@@ -37,7 +37,11 @@ See `examples/BasicNode/BasicNode.ino`.
 
 Minimal setup (NodeRemote only):
 ```cpp
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#else
 #include <WiFi.h>
+#endif
 #include <NodeRemote.h>
 
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
@@ -80,7 +84,7 @@ Command handler:
 - Payload: JSON with `job_uid`, `url`, `sha256`, `size` (and optional `version`, `firmware_uid`)
 - Behavior:
   - downloads firmware (HTTP/HTTPS)
-  - validates `sha256`
+  - validates `sha256` (ESP32/ESP8266)
   - flashes and reboots
   - reports progress/result back to NodeAnywhere
 
