@@ -2,7 +2,11 @@
 
 #include <ArduinoJson.h>
 #include <ESP.h>
+#if defined(ESP8266)
+#include <ESP8266HTTPClient.h>
+#else
 #include <HTTPClient.h>
+#endif
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #if defined(ESP32)
@@ -289,6 +293,35 @@ void NodeRemote::setMqttTlsInsecure(bool insecure) {
 
 void NodeRemote::setMqttCaCert(const char* caCertPem) {
   mqttCaCertPem_ = caCertPem;
+#if defined(ESP8266)
+  mqttCaCertList_.reset();
+  if (caCertPem != nullptr && strlen(caCertPem) > 0) {
+    mqttCaCertList_.reset(new BearSSL::X509List(caCertPem));
+  }
+#endif
+}
+
+void NodeRemote::configureTlsClient(WiFiClientSecure& client) {
+  // Default remains insecure for easiest first-time onboarding.
+  if (mqttTlsInsecure_) {
+    client.setInsecure();
+    return;
+  }
+
+#if defined(ESP32)
+  if (mqttCaCertPem_ != nullptr && strlen(mqttCaCertPem_) > 0) {
+    client.setCACert(mqttCaCertPem_);
+    return;
+  }
+#elif defined(ESP8266)
+  if (mqttCaCertList_) {
+    client.setTrustAnchors(mqttCaCertList_.get());
+    return;
+  }
+#endif
+
+  // No CA configured: fallback to insecure to avoid silent connection deadlocks.
+  client.setInsecure();
 }
 
 void NodeRemote::setHeartbeatIntervalMs(uint32_t intervalMs) {
@@ -578,20 +611,7 @@ bool NodeRemote::connectMqtt() {
     mqttPort_ = kDefaultMqttPort;
   }
   if (mqttTlsEnabled_ && ownsClient_) {
-    // Default to insecure TLS for easy first-time testing.
-    if (mqttTlsInsecure_) {
-      netTls_.setInsecure();
-    } else if (mqttCaCertPem_ != nullptr) {
-#if defined(ESP32)
-      netTls_.setCACert(mqttCaCertPem_);
-#else
-      // ESP8266 BearSSL path differs; keep insecure mode by default.
-      netTls_.setInsecure();
-#endif
-    } else {
-      // No CA provided; fallback to insecure rather than hard-failing silently.
-      netTls_.setInsecure();
-    }
+    configureTlsClient(netTls_);
   }
   mqtt_.setServer(mqttHost_.c_str(), mqttPort_);
 
@@ -695,24 +715,14 @@ bool NodeRemote::claimDevice() {
   // out-of-box experience simple. For production, pin a CA cert and avoid insecure TLS.
   if (url.startsWith("https://")) {
     // Reuse the class-level TLS client to avoid large stack usage in this function.
-    if (mqttTlsInsecure_) {
-      netTls_.setInsecure();
-    } else if (mqttCaCertPem_ != nullptr) {
-#if defined(ESP32)
-      netTls_.setCACert(mqttCaCertPem_);
-#else
-      netTls_.setInsecure();
-#endif
-    } else {
-      netTls_.setInsecure();
-    }
+    configureTlsClient(netTls_);
     if (!http.begin(netTls_, url)) {
       lastError_ = "http_begin_failed";
       noteClaimFailure(false);
       logLine("claim http begin failed url=" + url);
       return false;
     }
-  } else if (!http.begin(url)) {
+  } else if (!http.begin(netPlain_, url)) {
     lastError_ = "http_begin_failed";
     noteClaimFailure(false);
     logLine("claim http begin failed url=" + url);
@@ -1322,20 +1332,11 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
 
   HTTPClient http;
   WiFiClientSecure secure;
+  WiFiClient plain;
 
   if (url.startsWith("https://")) {
-    // Mirror MQTT TLS config: insecure by default for easy first-time usage.
-    if (mqttTlsInsecure_) {
-      secure.setInsecure();
-    } else if (mqttCaCertPem_ != nullptr) {
-#if defined(ESP32)
-      secure.setCACert(mqttCaCertPem_);
-#else
-      secure.setInsecure();
-#endif
-    } else {
-      secure.setInsecure();
-    }
+    // Mirror MQTT TLS config.
+    configureTlsClient(secure);
     if (!http.begin(secure, url)) {
       lastError_ = "ota_http_begin_failed";
       logLine("ota http begin failed");
@@ -1344,7 +1345,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
       return false;
     }
   } else {
-    if (!http.begin(url)) {
+    if (!http.begin(plain, url)) {
       lastError_ = "ota_http_begin_failed";
       logLine("ota http begin failed");
       publishOtaResult(jobUid, false, "http_begin_failed", version, firmwareUid);

@@ -2,11 +2,13 @@
 
 #include <Arduino.h>
 #include <functional>
+#include <memory>
 #include <PubSubClient.h>
 
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
 #include <LittleFS.h>
+#include <WiFiClientSecureBearSSL.h>
 
 // ESP8266 compatibility shim for ESP32 Preferences API subset used by NodeRemote.
 class Preferences {
@@ -175,6 +177,9 @@ class NodeRemote {
   bool mqttTlsEnabled_ = true;
   bool mqttTlsInsecure_ = true;
   const char* mqttCaCertPem_ = nullptr;
+#if defined(ESP8266)
+  std::unique_ptr<BearSSL::X509List> mqttCaCertList_;
+#endif
 
   struct WifiApConfig {
     String ssid;
@@ -214,6 +219,7 @@ class NodeRemote {
   bool handleWifiScanCommand(String& outAckJson);
   bool handleWifiListCommand(String& outAckJson);
   bool checkBootRevokeWindow();
+  void configureTlsClient(WiFiClientSecure& client);
   String defaultClientId() const;
   void logLine(const String& msg);
   void logThrottled(const String& msg, uint32_t& lastMs, uint32_t everyMs);

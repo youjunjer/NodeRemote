@@ -63,6 +63,19 @@ void loop() {
 }
 ```
 
+TLS CA mode (recommended for production):
+```cpp
+node.setMqttTlsInsecure(false);
+node.setMqttCaCert(R"EOF(
+-----BEGIN CERTIFICATE-----
+... your CA PEM ...
+-----END CERTIFICATE-----
+)EOF");
+```
+Notes:
+- Works for ESP32 and ESP8266.
+- The same TLS policy is applied to MQTT, HTTPS claim, and HTTPS OTA download.
+
 Command handler:
 - Optional. If you don't set one, a default handler is enabled.
 - Default commands:
