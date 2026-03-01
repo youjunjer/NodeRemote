@@ -5,6 +5,7 @@
 #if defined(ESP8266)
 #include <ESP8266HTTPClient.h>
 #include <Updater.h>
+#include <bearssl/bearssl_hash.h>
 #else
 #include <HTTPClient.h>
 #include <Update.h>
@@ -15,8 +16,6 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 extern "C" uint32_t esp_random(void);
-#elif defined(ESP8266)
-#include <Hash.h>
 #endif
 
 static const char* kDefaultMqttHost = "node.mqttgo.io";
@@ -85,6 +84,14 @@ static String sha256HexLower(const uint8_t* digest32) {
   }
   out[64] = '\0';
   return String(out);
+}
+
+static void abortUpdateCompat() {
+#if defined(ESP8266)
+  Update.end(false);
+#else
+  Update.abort();
+#endif
 }
 
 #if defined(ESP8266)
@@ -1372,7 +1379,8 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   }
 
   publishOtaProgress(jobUid, "flashing", 0);
-  if (!Update.begin(totalLen > 0 ? static_cast<size_t>(totalLen) : UPDATE_SIZE_UNKNOWN)) {
+  const size_t updateSize = (totalLen > 0) ? static_cast<size_t>(totalLen) : static_cast<size_t>(0xFFFFFFFFUL);
+  if (!Update.begin(updateSize)) {
     lastError_ = "ota_update_begin_failed";
     logLine("ota update begin failed");
     publishOtaResult(jobUid, false, "update_begin_failed", version, firmwareUid);
@@ -1387,8 +1395,8 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   // Use non-*_ret variants for compatibility with older Arduino-ESP32 toolchains.
   mbedtls_sha256_starts(&sha, 0);
 #elif defined(ESP8266)
-  SHA256Builder sha;
-  sha.begin();
+  br_sha256_context sha;
+  br_sha256_init(&sha);
 #endif
 
   WiFiClient* stream = http.getStreamPtr();
@@ -1398,7 +1406,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     lastError_ = "ota_no_memory";
     logLine("ota no memory for download buffer");
     publishOtaResult(jobUid, false, "no_memory", version, firmwareUid);
-    Update.abort();
+    abortUpdateCompat();
     http.end();
     otaInProgress_ = false;
     return false;
@@ -1425,14 +1433,14 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
 #if defined(ESP32)
     mbedtls_sha256_update(&sha, buf, static_cast<size_t>(n));
 #elif defined(ESP8266)
-    sha.add(buf, static_cast<size_t>(n));
+    br_sha256_update(&sha, buf, static_cast<size_t>(n));
 #endif
     const size_t w = Update.write(buf, static_cast<size_t>(n));
     if (w != static_cast<size_t>(n)) {
       lastError_ = "ota_update_write_failed";
       logLine("ota update write failed");
       publishOtaResult(jobUid, false, "update_write_failed", version, firmwareUid);
-      Update.abort();
+      abortUpdateCompat();
       free(buf);
       http.end();
       otaInProgress_ = false;
@@ -1466,7 +1474,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     lastError_ = "ota_size_mismatch";
     logLine("ota size mismatch wrote=" + String(written) + " expected=" + String(totalLen));
     publishOtaResult(jobUid, false, "size_mismatch", version, firmwareUid);
-    Update.abort();
+    abortUpdateCompat();
     otaInProgress_ = false;
     return false;
   }
@@ -1478,8 +1486,9 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   String gotSha = sha256HexLower(digest);
   gotSha.toLowerCase();
 #elif defined(ESP8266)
-  sha.calculate();
-  String gotSha = sha.toString();
+  uint8_t digest[32];
+  br_sha256_out(&sha, digest);
+  String gotSha = sha256HexLower(digest);
   gotSha.toLowerCase();
 #endif
 
@@ -1489,7 +1498,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
     lastError_ = "ota_sha256_mismatch";
     logLine("ota sha mismatch");
     publishOtaResult(jobUid, false, "sha256_mismatch", version, firmwareUid);
-    Update.abort();
+    abortUpdateCompat();
     otaInProgress_ = false;
     return false;
   }
