@@ -4,10 +4,11 @@
 #include <ESP.h>
 #if defined(ESP8266)
 #include <ESP8266HTTPClient.h>
+#include <Updater.h>
 #else
 #include <HTTPClient.h>
-#endif
 #include <Update.h>
+#endif
 #include <WiFiClientSecure.h>
 #if defined(ESP32)
 #include <mbedtls/sha256.h>
