@@ -3,6 +3,29 @@
 ESP32/ESP8266 library for NodeAnywhere device claim + remote control.
 Use NodeAnywhere to register devices, manage remote commands, and OTA.
 
+## NodeAnywhere 產品介紹（中文）
+📢【NodeAnywhere】讓您的物聯網裝置，從此「天涯若比鄰」！
+
+您是否曾為了修改一個 WiFi 密碼，就得前往現場？或是為了更新軟體，必須帶著電腦和 USB 線重新燒錄？  
+NodeAnywhere 是專為物聯網打造的雲端管理與遠端控制平台。透過 Google 帳號登入後，即可集中管理裝置，並從後台完成遠端操作。
+
+只要裝置可連網，您就能在後台進行：
+- 遠端狀態查看
+- 遠端指令控制
+- WiFi 設定管理
+- OTA 韌體更新
+
+搭配 NodeRemote 程式庫，你可以快速把 ESP32/ESP8266 裝置接入 NodeAnywhere（https://node.mqttgo.io），將維運流程由「現場維護」轉成「雲端管理」。
+
+### 重點功能列表
+1. 全方位裝置管理與狀態追蹤：透過 Dashboard 即時查看裝置在線狀態、硬體資訊（晶片型號、記憶體、IP/MAC 位址）及 RSSI。
+2. 遠端指令系統：內建 `Ping`、`Info`、`Sleep`、`Reset` 四大核心指令。
+3. 雲端序列監控：可透過 `node.println(...)` 上傳裝置端訊息到後台即時查看。
+4. WiFi 遠端管理與備援：可遠端掃描 WiFi，並設定最多 5 組 AP，支援優先序與切換策略。
+5. OTA 線上更新：支援推送韌體 `.bin` 到遠端裝置，減少 USB 重複燒錄。
+6. 健康狀態數據分析：可追蹤心跳與 RSSI 變化，協助觀察長期運作穩定度。
+7. 安全機制：一次性 Token 註冊、NVS 儲存憑證、SHA 韌體驗證與裝置主題隔離。
+
 ## Required Backend
 - This library is designed to work with **NodeAnywhere backend**.
 - Backend URL: **https://node.mqttgo.io**
