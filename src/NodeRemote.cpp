@@ -476,6 +476,15 @@ void NodeRemote::loop() {
   ensureConnected();
   mqtt_.loop();
 
+  const bool wifiNow = (WiFi.status() == WL_CONNECTED);
+  if (wifiNow && !wasWifiConnected_) {
+    // New WiFi connection (or re-connect) -> allow public IP report once.
+    wasWifiConnected_ = true;
+    publicIpReported_ = false;
+  } else if (!wifiNow && wasWifiConnected_) {
+    wasWifiConnected_ = false;
+  }
+
   // Run OTA outside MQTT callback context to reduce stack pressure.
   if (otaPending_ && !otaInProgress_) {
     const String payload = otaPendingPayload_;
@@ -689,7 +698,52 @@ bool NodeRemote::connectMqtt() {
   } else {
     logLine("lifecycle event send failed");
   }
+  // Report public IP once per boot (best-effort).
+  reportPublicIpOnce();
   return true;
+}
+
+bool NodeRemote::reportPublicIpOnce() {
+  if (publicIpReported_) return true;
+  if (apiBaseUrl_.isEmpty() || deviceUid_.isEmpty() || mqttUser_.isEmpty() || mqttPass_.isEmpty()) {
+    return false;
+  }
+  const uint32_t now = millis();
+  if (lastPublicIpAttemptMs_ != 0 && now - lastPublicIpAttemptMs_ < publicIpRetryIntervalMs_) {
+    return false;
+  }
+  lastPublicIpAttemptMs_ = now;
+
+  HTTPClient http;
+  const String url = apiBaseUrl_ + "/api/devices/report-public-ip";
+  if (url.startsWith("https://")) {
+    configureTlsClient(netTls_);
+    if (!http.begin(netTls_, url)) {
+      logLine("public ip report http begin failed");
+      return false;
+    }
+  } else if (!http.begin(netPlain_, url)) {
+    logLine("public ip report http begin failed");
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<192> reqDoc;
+  reqDoc["device_uid"] = deviceUid_;
+  reqDoc["mqtt_username"] = mqttUser_;
+  reqDoc["mqtt_password"] = mqttPass_;
+  String body;
+  serializeJson(reqDoc, body);
+  const int status = http.POST(body);
+  http.end();
+
+  if (status == 200) {
+    publicIpReported_ = true;
+    logLine("public ip reported");
+    return true;
+  }
+  logLine("public ip report failed status=" + String(status));
+  return false;
 }
 
 bool NodeRemote::subscribeDownTopics() {

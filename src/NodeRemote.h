@@ -169,6 +169,10 @@ class NodeRemote {
   uint32_t lastOtaProgressMs_ = 0;
   bool otaPending_ = false;
   String otaPendingPayload_;
+  bool publicIpReported_ = false;
+  uint32_t lastPublicIpAttemptMs_ = 0;
+  uint32_t publicIpRetryIntervalMs_ = 30000;
+  bool wasWifiConnected_ = false;
   String serialInQueue_[kSerialInQueueMax];
   uint8_t serialInHead_ = 0;
   uint8_t serialInTail_ = 0;
@@ -219,6 +223,7 @@ class NodeRemote {
   bool handleWifiScanCommand(String& outAckJson);
   bool handleWifiListCommand(String& outAckJson);
   bool checkBootRevokeWindow();
+  bool reportPublicIpOnce();
   void configureTlsClient(WiFiClientSecure& client);
   String defaultClientId() const;
   void logLine(const String& msg);
