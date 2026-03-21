@@ -18,13 +18,13 @@ NodeRemote node(CLAIM_TOKEN, DEVICE_UID);
 // ------ 使用者自行設定區 ------
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
-char* MQTTServer = "mqttgo.io";        // 你的 MQTT 伺服器
+const char* MQTTServer = "mqttgo.io";        // 你的 MQTT 伺服器
 int MQTTPort = 1883;                   // 你的 MQTT Port
 String MQTTClientId = "";              // 你的 MQTT ClientID（空白則自動產生）
-char* MQTTUser = "";                   // 你的 MQTT 帳號
-char* MQTTPassword = "";               // 你的 MQTT 密碼
-char* MQTTPubTopic = "YourTopic/pub";  // 發布主題
-char* MQTTSubTopic = "YourTopic/sub";  // 訂閱主題
+const char* MQTTUser = "";                   // 你的 MQTT 帳號
+const char* MQTTPassword = "";               // 你的 MQTT 密碼
+const char* MQTTPubTopic = "YourTopic/pub";  // 發布主題
+const char* MQTTSubTopic = "YourTopic/sub";  // 訂閱主題
 
 long MQTTLastPublishTime;          // 上次發布時間（毫秒）
 long MQTTPublishInterval = 10000;  // 每 10 秒發布一次

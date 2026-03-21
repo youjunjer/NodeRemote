@@ -1,7 +1,6 @@
 #include "NodeRemote.h"
 
 #include <ArduinoJson.h>
-#include <ESP.h>
 #if defined(ESP8266)
 #include <ESP8266HTTPClient.h>
 #include <Updater.h>
@@ -715,16 +714,26 @@ bool NodeRemote::reportPublicIpOnce() {
   lastPublicIpAttemptMs_ = now;
 
   HTTPClient http;
-  const String url = apiBaseUrl_ + "/api/devices/report-public-ip";
+  String url = apiBaseUrl_ + "/api/devices/report-public-ip";
   if (url.startsWith("https://")) {
-    configureTlsClient(netTls_);
-    if (!http.begin(netTls_, url)) {
-      logLine("public ip report http begin failed");
+    url = "http://" + url.substring(strlen("https://"));
+  }
+  WiFiClientSecure secure;
+  WiFiClient plain;
+  logLine("public ip report start url=" + url);
+  if (url.startsWith("https://")) {
+    logLine(String("public ip report transport=https tls=") + (mqttTlsInsecure_ ? "insecure" : "ca"));
+    configureTlsClient(secure);
+    if (!http.begin(secure, url)) {
+      logLine("public ip report http begin failed transport=https");
       return false;
     }
-  } else if (!http.begin(netPlain_, url)) {
-    logLine("public ip report http begin failed");
-    return false;
+  } else {
+    logLine("public ip report transport=http");
+    if (!http.begin(plain, url)) {
+      logLine("public ip report http begin failed transport=http");
+      return false;
+    }
   }
   http.addHeader("Content-Type", "application/json");
 
@@ -742,7 +751,7 @@ bool NodeRemote::reportPublicIpOnce() {
     logLine("public ip reported");
     return true;
   }
-  logLine("public ip report failed status=" + String(status));
+  logLine("public ip report failed status=" + String(status) + " error=" + HTTPClient::errorToString(status));
   return false;
 }
 
@@ -1362,7 +1371,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   const String jobUid = String(doc["job_uid"] | doc["job"] | "");
   const String firmwareUid = String(doc["firmware_uid"] | "");
   const String version = String(doc["version"] | "");
-  const String url = String(doc["url"] | "");
+  String url = String(doc["url"] | "");
   const String expectSha = String(doc["sha256"] | doc["sha"] | "");
   const int expectSize = int(doc["size"] | doc["size_bytes"] | 0);
 
@@ -1391,6 +1400,13 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   lastOtaProgressMs_ = 0;
   logLine("ota start job=" + jobUid + " ver=" + version);
   publishOtaProgress(jobUid, "downloading", 0);
+
+#if defined(ESP8266)
+  if (url.startsWith("https://node.mqttgo.io/api/ota/")) {
+    url = "http://" + url.substring(strlen("https://"));
+    logLine("ota url downgraded to http for ESP8266");
+  }
+#endif
 
   HTTPClient http;
   WiFiClientSecure secure;
