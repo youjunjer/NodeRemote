@@ -1,8 +1,3 @@
-#if defined(ESP8266)
-#include <ESP8266WiFi.h>
-#else
-#include <WiFi.h>
-#endif
 #include <NodeRemote.h> 
 
 // Remote-managed 最小化測試範例:

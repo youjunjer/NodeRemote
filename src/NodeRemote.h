@@ -49,7 +49,7 @@ class Preferences {
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "1.0.0";
+  static constexpr const char* kVersion = "1.0.1";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();

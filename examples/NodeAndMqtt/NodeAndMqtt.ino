@@ -1,8 +1,3 @@
-#if defined(ESP8266)
-#include <ESP8266WiFi.h>
-#else
-#include <WiFi.h>
-#endif
 #include <NodeRemote.h>
 
 // NodeRemote + 使用者自有資料通道範例：
@@ -28,6 +23,8 @@ const char* MQTTSubTopic = "YourTopic/sub";  // 訂閱主題
 
 long MQTTLastPublishTime;          // 上次發布時間（毫秒）
 long MQTTPublishInterval = 10000;  // 每 10 秒發布一次
+unsigned long MQTTLastReconnectAttemptMs = 0;
+const unsigned long MQTTReconnectIntervalMs = 5000;  // 失敗後每 5 秒重試一次
 WiFiClient WifiClient;
 PubSubClient MQTTClient(WifiClient);
 
@@ -54,6 +51,14 @@ void setup() {
 void loop() {
   // NodeRemote 維護（請持續呼叫）
   node.loop();
+
+  // WiFi 中斷時，將自有 MQTT 連線一併釋放，避免卡在舊 socket 狀態。
+  if (WiFi.status() != WL_CONNECTED) {
+    if (MQTTClient.connected()) {
+      MQTTClient.disconnect();
+    }
+    WifiClient.stop();
+  }
 
   // 自有 MQTT 只在 WiFi 可用時重連
   if (WiFi.status() == WL_CONNECTED) {
@@ -82,23 +87,23 @@ void loop() {
 void MQTTConnect() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (MQTTClient.connected()) return;
+  if (millis() - MQTTLastReconnectAttemptMs < MQTTReconnectIntervalMs) return;
+  MQTTLastReconnectAttemptMs = millis();
   MQTTClient.setServer(MQTTServer, MQTTPort);
   MQTTClient.setCallback(MQTTCallback);
-  while (!MQTTClient.connected()) {
-    // 若未指定 ClientID，則隨機產生避免撞名
-    if (MQTTClientId == "") MQTTClientId = "esp32-" + String(random(1000000, 9999999));
-    if (MQTTClient.connect(MQTTClientId.c_str(), MQTTUser, MQTTPassword)) {
-      // 連線成功後訂閱主題
-      Serial.println("MQTT connected");
-      MQTTClient.subscribe(MQTTSubTopic);
-    } else {
-      // 連線失敗：印出狀態並延遲重試
-      MQTTClient.disconnect();
-      Serial.print("MQTT connection failed, status code=");
-      Serial.println(MQTTClient.state());
-      Serial.println("Reconnecting in five seconds");
-      delay(100);
-    }
+  // 若未指定 ClientID，則隨機產生避免撞名
+  if (MQTTClientId == "") MQTTClientId = "esp-" + String(random(1000000, 9999999));
+  if (MQTTClient.connect(MQTTClientId.c_str(), MQTTUser, MQTTPassword)) {
+    // 連線成功後訂閱主題
+    Serial.println("MQTT connected");
+    MQTTClient.subscribe(MQTTSubTopic);
+  } else {
+    // 連線失敗：印出狀態，下一次 loop 再重試
+    MQTTClient.disconnect();
+    WifiClient.stop();
+    Serial.print("MQTT connection failed, status code=");
+    Serial.println(MQTTClient.state());
+    Serial.println("Reconnecting in five seconds");
   }
 }
 
