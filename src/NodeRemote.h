@@ -9,8 +9,18 @@
 #include <ESP8266WiFi.h>
 #include <LittleFS.h>
 #include <WiFiClientSecureBearSSL.h>
+#elif defined(ARDUINO_ARCH_RP2040)
+#include <WiFi.h>
+#include <LittleFS.h>
+#include <RP2040.h>
+#else
+#include <Preferences.h>
+#include <WiFi.h>
+#endif
+#include <WiFiClientSecure.h>
 
-// ESP8266 compatibility shim for ESP32 Preferences API subset used by NodeRemote.
+#if defined(ESP8266) || defined(ARDUINO_ARCH_RP2040)
+// ESP8266 / RP2040 compatibility shim for the ESP32 Preferences API subset used by NodeRemote.
 class Preferences {
  public:
   bool begin(const char* ns, bool readOnly = false);
@@ -41,15 +51,11 @@ class Preferences {
   bool load_();
   bool save_();
 };
-#else
-#include <Preferences.h>
-#include <WiFi.h>
 #endif
-#include <WiFiClientSecure.h>
 
 class NodeRemote {
  public:
-  static constexpr const char* kVersion = "1.0.1";
+  static constexpr const char* kVersion = "1.0.2";
   using CommandHandler = std::function<void(const String& subTopic, const String& payload)>;
 
   NodeRemote();

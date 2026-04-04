@@ -5,6 +5,8 @@
 #include <ESP8266HTTPClient.h>
 #include <Updater.h>
 #include <bearssl/bearssl_hash.h>
+#elif defined(ARDUINO_ARCH_RP2040)
+#include <HTTPClient.h>
 #else
 #include <HTTPClient.h>
 #include <Update.h>
@@ -25,6 +27,8 @@ static const char* kDefaultApiBaseUrl = "https://node.mqttgo.io";
 static String chipModelString() {
 #if defined(ESP8266)
   return "ESP8266";
+#elif defined(ARDUINO_ARCH_RP2040)
+  return "PICO_W";
 #else
   // Avoid relying on IDF-only chip info headers/types (esp_chip_info_t/CHIP_*) because
   // Arduino-ESP32 exposes stable helpers via ESP.* across core versions.
@@ -44,6 +48,8 @@ static String resetReasonString() {
   String reason = ESP.getResetReason();
   reason.trim();
   if (!reason.isEmpty()) return reason;
+  return "unknown";
+#elif defined(ARDUINO_ARCH_RP2040)
   return "unknown";
 #else
   const esp_reset_reason_t r = esp_reset_reason();
@@ -88,12 +94,15 @@ static String sha256HexLower(const uint8_t* digest32) {
 static void abortUpdateCompat() {
 #if defined(ESP8266)
   Update.end(false);
+#elif defined(ARDUINO_ARCH_RP2040)
+  // RP2040 OTA is not enabled in this first support pass.
+  return;
 #else
   Update.abort();
 #endif
 }
 
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_RP2040)
 bool Preferences::fsReady_ = false;
 
 bool Preferences::begin(const char* ns, bool readOnly) {
@@ -233,6 +242,58 @@ void Preferences::clear() {
   dirty_ = true;
 }
 #endif
+
+static uint32_t platformFreeHeap() {
+#if defined(ESP8266) || defined(ESP32)
+  return ESP.getFreeHeap();
+#else
+  return 0;
+#endif
+}
+
+static int platformCpuFreqMHz() {
+#if defined(ESP8266) || defined(ESP32)
+  return ESP.getCpuFreqMHz();
+#elif defined(F_CPU)
+  return static_cast<int>(F_CPU / 1000000UL);
+#else
+  return 0;
+#endif
+}
+
+static uint32_t platformFlashMb() {
+#if defined(ESP8266) || defined(ESP32)
+  return ESP.getFlashChipSize() / (1024UL * 1024UL);
+#elif defined(PICO_FLASH_SIZE_BYTES)
+  return static_cast<uint32_t>(PICO_FLASH_SIZE_BYTES / (1024UL * 1024UL));
+#else
+  return 0;
+#endif
+}
+
+static void platformRestart() {
+#if defined(ARDUINO_ARCH_RP2040)
+  rp2040.reboot();
+#else
+  ESP.restart();
+#endif
+}
+
+static uint32_t platformClientIdSuffix() {
+#if defined(ESP8266)
+  return static_cast<uint32_t>(ESP.getChipId() & 0xFFFF);
+#elif defined(ESP32)
+  uint64_t mac = ESP.getEfuseMac();
+  return static_cast<uint32_t>(mac & 0xFFFF);
+#else
+  String mac = WiFi.macAddress();
+  mac.replace(":", "");
+  if (mac.length() >= 4) {
+    return static_cast<uint32_t>(strtoul(mac.substring(mac.length() - 4).c_str(), nullptr, 16));
+  }
+  return static_cast<uint32_t>(random(0, 0x10000));
+#endif
+}
 
 NodeRemote* NodeRemote::instance_ = nullptr;
 
@@ -499,12 +560,16 @@ void NodeRemote::loop() {
     if (sleepWakeUs_ > 0) {
 #if defined(ESP8266)
       ESP.deepSleep(sleepWakeUs_);
+#elif defined(ARDUINO_ARCH_RP2040)
+      logLine("sleep unsupported on RP2040");
 #else
       esp_sleep_enable_timer_wakeup(sleepWakeUs_);
 #endif
     } else {
 #if defined(ESP8266)
       ESP.deepSleep(0);
+#elif defined(ARDUINO_ARCH_RP2040)
+      logLine("sleep unsupported on RP2040");
 #endif
     }
     // Best-effort disconnect so broker sees clean session end.
@@ -513,7 +578,7 @@ void NodeRemote::loop() {
 #if defined(ESP32)
     esp_deep_sleep_start();
     // Should never return.
-    ESP.restart();
+    platformRestart();
 #endif
   }
 
@@ -523,13 +588,13 @@ void NodeRemote::loop() {
     logLine("wipe identity now");
     clearCredentials();
     delay(80);
-    ESP.restart();
+    platformRestart();
   }
 
   if (rebootPending_ && rebootAtMs_ != 0 && millis() >= rebootAtMs_) {
     rebootPending_ = false;
     rebootAtMs_ = 0;
-    ESP.restart();
+    platformRestart();
   }
 
   if (!mqtt_.connected()) {
@@ -996,7 +1061,11 @@ bool NodeRemote::handleWifiScanCommand(String& outAckJson) {
   }
 
   logLine("wifi scan start");
+#if defined(ARDUINO_ARCH_RP2040)
+  const int found = WiFi.scanNetworks();
+#else
   const int found = WiFi.scanNetworks(false, true);
+#endif
   DynamicJsonDocument report(2048);
   report["ts_ms"] = millis();
   report["type"] = "wifi_scan_result";
@@ -1008,12 +1077,18 @@ bool NodeRemote::handleWifiScanCommand(String& outAckJson) {
     JsonObject it = arr.createNestedObject();
     it["ssid"] = ssid;
     it["rssi"] = WiFi.RSSI(i);
+#if defined(ARDUINO_ARCH_RP2040)
+    it["enc"] = 0;
+#else
     it["enc"] = static_cast<int>(WiFi.encryptionType(i));
+#endif
   }
   String payload;
   serializeJson(report, payload);
   const bool published = publishUp("wifi/scan_result", payload, false);
+#if !defined(ARDUINO_ARCH_RP2040)
   WiFi.scanDelete();
+#endif
 
   ack["ok"] = published;
   ack["result"] = published ? "scan_published" : "scan_publish_failed";
@@ -1239,10 +1314,10 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
     rebootAtMs_ = millis() + 250;  // allow ack to flush
   } else if (cmd == "info") {
     const uint32_t upSec = static_cast<uint32_t>(millis() / 1000);
-    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t freeHeap = platformFreeHeap();
     const uint32_t heapK = (freeHeap + 512) / 1024;
-    const int cpuMhz = ESP.getCpuFreqMHz();
-    const uint32_t flashMb = ESP.getFlashChipSize() / (1024UL * 1024UL);
+    const int cpuMhz = platformCpuFreqMHz();
+    const uint32_t flashMb = platformFlashMb();
     const String chip = chipModelString();
     String mac = WiFi.macAddress();
     mac.replace(":", "");
@@ -1273,6 +1348,10 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
     summary += ", reset_reason=" + resetReason;
     ack["summary"] = summary;
   } else if (cmd == "sleep") {
+#if defined(ARDUINO_ARCH_RP2040)
+    ack["ok"] = false;
+    ack["error"] = "sleep_unsupported_on_rp2040";
+#else
     const int minSec = 60;
     const int maxSec = 86400;
     if (sleepSeconds < minSec || sleepSeconds > maxSec) {
@@ -1289,6 +1368,7 @@ void NodeRemote::handleDefaultCommand(const String& subTopic, const String& payl
       sleepPending_ = true;
       sleepAtMs_ = millis() + 400;  // allow ack to flush
     }
+#endif
   } else if (cmd == "wipe_identity") {
     // ACK first, then clear local identity and reboot.
     ack["ok"] = true;
@@ -1361,6 +1441,23 @@ void NodeRemote::publishOtaResult(const String& jobUid, bool ok, const String& e
 }
 
 bool NodeRemote::handleOtaPayload(const String& payload) {
+#if defined(ARDUINO_ARCH_RP2040)
+  DynamicJsonDocument doc(256);
+  String jobUid = "";
+  String firmwareUid = "";
+  String version = "";
+  if (deserializeJson(doc, payload) == DeserializationError::Ok) {
+    jobUid = String(doc["job_uid"] | doc["job"] | "");
+    firmwareUid = String(doc["firmware_uid"] | "");
+    version = String(doc["version"] | "");
+  }
+  lastError_ = "ota_unsupported_on_rp2040";
+  logLine("ota unsupported on RP2040 in this version");
+  if (!jobUid.isEmpty()) {
+    publishOtaResult(jobUid, false, "unsupported_platform", version, firmwareUid);
+  }
+  return false;
+#else
   DynamicJsonDocument doc(1024);
   if (deserializeJson(doc, payload) != DeserializationError::Ok) {
     lastError_ = "ota_json_parse_failed";
@@ -1590,6 +1687,7 @@ bool NodeRemote::handleOtaPayload(const String& payload) {
   rebootAtMs_ = millis() + 1500;
   otaInProgress_ = false;
   return true;
+#endif
 }
 
 bool NodeRemote::println(const String& message) {
@@ -1673,9 +1771,9 @@ bool NodeRemote::sendHeartbeat() {
 bool NodeRemote::sendStatus() {
   StaticJsonDocument<256> doc;
   const uint32_t upSec = static_cast<uint32_t>(millis() / 1000);
-  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t freeHeap = platformFreeHeap();
   const uint32_t heapK = (freeHeap + 512) / 1024;
-  const uint32_t flashMb = ESP.getFlashChipSize() / (1024UL * 1024UL);
+  const uint32_t flashMb = platformFlashMb();
   const String chip = chipModelString();
   String mac = WiFi.macAddress();
   mac.replace(":", "");
@@ -1811,6 +1909,8 @@ bool NodeRemote::connectWifiFromManagedList() {
       logLine("wifi try round=" + String(round + 1) + "/" + String(wifiRoundsPerCycle_) + " ssid=" + ssid + " prio=" + String(wifiAps_[i].priority));
 #if defined(ESP8266)
       WiFi.disconnect(false);
+#elif defined(ARDUINO_ARCH_RP2040)
+      WiFi.disconnect();
 #else
       WiFi.disconnect(false, false);
 #endif
@@ -1837,6 +1937,10 @@ bool NodeRemote::connectWifiFromManagedList() {
 }
 
 bool NodeRemote::checkBootRevokeWindow() {
+#if defined(ARDUINO_ARCH_RP2040)
+  logLine("startup revoke window unsupported on RP2040/Pico W");
+  return false;
+#else
   static constexpr int kBootButtonPin = 0;           // BOOT/FLASH button on many ESP32/ESP8266 dev boards (IO0/GPIO0)
   static constexpr uint32_t kBootWaitWindowMs = 5000;
 
@@ -1857,6 +1961,7 @@ bool NodeRemote::checkBootRevokeWindow() {
     delay(20);
   }
   return false;
+#endif
 }
 
 void NodeRemote::updateTopicBases() {
@@ -1922,10 +2027,12 @@ String NodeRemote::defaultClientId() const {
 #if defined(ESP8266)
   uint32_t macSuffix = static_cast<uint32_t>(ESP.getChipId() & 0xFFFF);
   uint16_t r = static_cast<uint16_t>(random(0, 0x10000));
-#else
-  uint64_t mac = ESP.getEfuseMac();
-  uint32_t macSuffix = static_cast<uint32_t>(mac & 0xFFFF);
+#elif defined(ESP32)
+  uint32_t macSuffix = platformClientIdSuffix();
   uint16_t r = static_cast<uint16_t>(esp_random() & 0xFFFF);
+#else
+  uint32_t macSuffix = platformClientIdSuffix();
+  uint16_t r = static_cast<uint16_t>(random(0, 0x10000));
 #endif
 
   String uid = deviceUid_;
